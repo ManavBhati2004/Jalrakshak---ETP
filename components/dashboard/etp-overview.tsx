@@ -15,7 +15,7 @@ import { useAuthStore } from "@/lib/store/auth";
 import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
-import { formatNumber, formatDate, timeAgo, toCSV } from "@/lib/utils";
+import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
 import type { EtpEntry } from "@/lib/types";
 
 export function EtpOverview() {
@@ -110,9 +110,7 @@ export function EtpOverview() {
       Status: e.status,
       "Submitted At": e.submittedAt,
     }));
-    const n = new Date();
-    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
-    download(`jalrakshak-etp-${industry.id}-${today}.csv`, toCSV(rows));
+    download(stampedName(`jalrakshak-etp-${industry.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${industry.name}` });
   };
 

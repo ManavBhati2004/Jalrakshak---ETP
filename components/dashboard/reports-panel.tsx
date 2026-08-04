@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useDataStore } from "@/lib/store/data";
-import { toCSV } from "@/lib/utils";
+import { toCSV, stampedName } from "@/lib/utils";
 
 const TODAY = "2026-06-20";
 
@@ -53,7 +53,7 @@ export function ReportsPanel() {
     const id = toast.loading(`Generating ${r.title} report…`);
     setTimeout(() => {
       const rows = r.build() as Record<string, unknown>[];
-      download(`jalrakshak-${r.key}-${TODAY}.csv`, toCSV(rows));
+      download(stampedName(`jalrakshak-${r.key}`), toCSV(rows));
       toast.success(`${r.title} report exported`, { id, description: `${rows.length} rows · Excel-ready CSV` });
       setBusy(null);
     }, 800);

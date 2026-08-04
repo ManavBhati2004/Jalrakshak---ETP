@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Suspense } from "react";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
 import { Plus, Eye, Phone, Mail, FileText } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -19,11 +20,32 @@ const FILTERS = [
 ] as const;
 
 export default function IndustriesPage() {
+  return (
+    <Suspense fallback={null}>
+      <IndustriesView />
+    </Suspense>
+  );
+}
+
+function IndustriesView() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const industries = useDataStore((s) => s.industries);
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
   const [selected, setSelected] = useState<Industry | null>(null);
 
   const filtered = useMemo(() => industries, [industries]);
+
+  // Deep-link from the topbar search (?focus=IND-###) → open that unit's detail.
+  useEffect(() => {
+    const focus = searchParams.get("focus");
+    if (!focus) return;
+    const ind = industries.find((i) => i.id === focus);
+    if (ind) {
+      setSelected(ind);
+      router.replace("/dashboard/industries", { scroll: false });
+    }
+  }, [searchParams, industries, router]);
 
   const counts = useMemo(
     () => ({
@@ -81,6 +103,15 @@ export default function IndustriesPage() {
           </div>
         );
       },
+    },
+    {
+      accessorKey: "registeredAt",
+      header: "Registered",
+      cell: ({ row }) => (
+        <span className="whitespace-nowrap text-xs text-muted-foreground">
+          {formatDate(row.original.registeredAt, true)}
+        </span>
+      ),
     },
     {
       accessorKey: "status",
@@ -201,6 +232,10 @@ function IndustryDialog({ industry, onClose }: { industry: Industry | null; onCl
                   <p className="mt-0.5 text-sm font-semibold capitalize text-foreground">{s.v}</p>
                 </div>
               ))}
+            </div>
+            <div className="flex items-center justify-between rounded-xl border border-border bg-muted/30 p-3 text-sm">
+              <span className="text-muted-foreground">Registered</span>
+              <span className="font-medium text-foreground">{formatDate(industry.registeredAt, true)}</span>
             </div>
             <div className="flex items-center justify-between rounded-xl border border-border bg-muted/30 p-3 text-sm">
               <span className="text-muted-foreground">Last reading</span>

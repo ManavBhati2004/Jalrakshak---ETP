@@ -124,6 +124,18 @@ export default function EtpEntryPage() {
     }
   };
 
+  // Cap every numeric entry at 5 digits (max 99999) — strip non-digits per keystroke.
+  const reg5 = (name: keyof FormValues) => {
+    const r = register(name);
+    return {
+      ...r,
+      onChange: (e: React.ChangeEvent<HTMLInputElement>) => {
+        e.target.value = e.target.value.replace(/\D/g, "").slice(0, 5);
+        return r.onChange(e);
+      },
+    };
+  };
+
   const predicted: AlertType[] = [];
   if (totalWaterIntake === 0) predicted.push("zero-reading");
   if (industry && totalWaterIntake > industry.permittedKLD) predicted.push("capacity-exceeded");
@@ -198,8 +210,9 @@ export default function EtpEntryPage() {
                   <input
                     type="number"
                     step="any"
+                    inputMode="numeric"
                     max={etpCapacity}
-                    {...register(f.name)}
+                    {...reg5(f.name)}
                     onBlur={handleEtpInletBlur}
                     className={`${inputCls}${etpInletExceeded || freshErr ? " border-red-500/70 bg-red-500/5 focus:border-red-500" : ""}`}
                     placeholder="0"
@@ -211,7 +224,8 @@ export default function EtpEntryPage() {
                   <input
                     type="number"
                     step="any"
-                    {...register(f.name)}
+                    inputMode="numeric"
+                    {...reg5(f.name)}
                     readOnly={etpInletExceeded}
                     className={`${inputCls}${freshErr ? " border-red-500/70 bg-red-500/5 focus:border-red-500" : ""}${etpInletExceeded ? " cursor-not-allowed opacity-60" : ""}`}
                     placeholder="0"

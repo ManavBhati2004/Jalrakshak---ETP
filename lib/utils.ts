@@ -32,6 +32,17 @@ export function formatDate(iso: string | null, withTime = false) {
   });
 }
 
+/** Filename-safe local timestamp, e.g. "2026-06-20_14-05-33". */
+export function timeStamp(d = new Date()) {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+/** Append the download date+time to a CSV base name → "base-2026-06-20_14-05-33.csv". */
+export function stampedName(base: string) {
+  return `${base}-${timeStamp()}.csv`;
+}
+
 export function timeAgo(iso: string | null) {
   if (!iso) return "—";
   const diff = Date.now() - new Date(iso).getTime();

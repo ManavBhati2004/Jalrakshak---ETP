@@ -4,7 +4,7 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ============================================================
-   RSPCB JalRakshak — Theme Tokens
+   JalRakshak — Theme Tokens
    Light  : Landing + Home + Login  (white / teal / emerald / blue)
    Dark   : Monitoring Dashboard    (slate / deep-green / electric-cyan)
    ============================================================ */

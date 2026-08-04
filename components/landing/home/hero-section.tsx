@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { ArrowRight, ShieldCheck, Activity } from "lucide-react";
+import { ArrowRight, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AnimatedCounter } from "@/components/shared/animated-counter";
 import { HERO_STATS } from "@/lib/constants";
@@ -27,11 +27,11 @@ export function HeroSection() {
       >
         <span className="mb-6 inline-flex items-center gap-2 rounded-full border border-teal-200 bg-white/80 px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-teal-700 shadow-sm backdrop-blur">
           <ShieldCheck className="h-3.5 w-3.5" />
-          An Initiative by RSPCB · Balotra
+          Smart ETP Wastewater Monitoring
         </span>
 
         <h1 className="font-display text-4xl font-extrabold leading-[1.05] tracking-tight text-slate-900 sm:text-6xl lg:text-7xl">
-          RSPCB <span className="text-gradient-brand">JalRakshak</span>
+          <span className="text-gradient-brand">JalRakshak</span>
         </h1>
         <p className="mt-5 max-w-2xl text-balance text-lg text-slate-600 sm:text-xl">
           Smart Textile Wastewater Monitoring &amp; Compliance Platform — turning
@@ -45,12 +45,6 @@ export function HeroSection() {
               Enter Command Center
               <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-1" />
             </Link>
-          </Button>
-          <Button asChild size="lg" variant="outline" className="h-12 rounded-full border-teal-200 bg-white/70 px-7 text-base font-semibold text-teal-700 hover:bg-white">
-            <a href="#etp">
-              <Activity className="h-4 w-4" />
-              Explore the Platform
-            </a>
           </Button>
         </div>
       </motion.div>

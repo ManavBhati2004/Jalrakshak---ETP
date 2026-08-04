@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Menu, Search, Bell, LogOut, ChevronDown, UserCog } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -59,13 +59,7 @@ export function Topbar() {
       </Sheet>
 
       {/* search */}
-      <div className="relative hidden max-w-sm flex-1 md:block">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          placeholder={admin ? "Search industries, readings, alerts…" : "Search your readings…"}
-          className="h-9 w-full rounded-xl border border-border bg-muted/40 pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:bg-background"
-        />
-      </div>
+      {admin ? <AdminSearch /> : <div className="hidden flex-1 md:block" />}
 
       <div className="flex flex-1 items-center justify-end gap-1.5">
         <span className="mr-1 hidden items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-600 sm:inline-flex">
@@ -128,5 +122,86 @@ export function Topbar() {
         </DropdownMenu>
       </div>
     </header>
+  );
+}
+
+/** Admin-only live industry search → opens the matched unit's detail on the Industries page. */
+function AdminSearch() {
+  const router = useRouter();
+  const industries = useDataStore((s) => s.industries);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const q = query.trim().toLowerCase();
+  const matches = useMemo(() => {
+    if (!q) return [];
+    return industries
+      .filter(
+        (i) =>
+          i.name.toLowerCase().includes(q) ||
+          i.area.toLowerCase().includes(q) ||
+          i.consentNumber.toLowerCase().includes(q),
+      )
+      .slice(0, 6);
+  }, [industries, q]);
+
+  const select = (id: string) => {
+    setQuery("");
+    setOpen(false);
+    router.push(`/dashboard/industries?focus=${id}`);
+  };
+
+  return (
+    <div className="relative hidden max-w-sm flex-1 md:block">
+      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setQuery("");
+            setOpen(false);
+          } else if (e.key === "Enter" && matches[0]) {
+            select(matches[0].id);
+          }
+        }}
+        placeholder="Search industries by name, area, consent…"
+        className="h-9 w-full rounded-xl border border-border bg-muted/40 pl-9 pr-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:bg-background"
+      />
+      {open && q && (
+        <div className="absolute left-0 right-0 top-11 z-30 overflow-hidden rounded-xl border border-border bg-card shadow-lg">
+          {matches.length === 0 ? (
+            <p className="px-3 py-3 text-sm text-muted-foreground">No industries match “{query}”.</p>
+          ) : (
+            matches.map((i) => (
+              <button
+                key={i.id}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  select(i.id);
+                }}
+                className="flex w-full items-center justify-between gap-3 border-b border-border/60 px-3 py-2.5 text-left last:border-b-0 hover:bg-muted/50"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-foreground">{i.name}</span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {i.area} · {i.consentNumber}
+                  </span>
+                </span>
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {i.status}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
   );
 }

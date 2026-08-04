@@ -65,7 +65,7 @@ export default function LoginPage() {
           </h1>
           <p className="mt-4 max-w-sm text-white/80">
             Sign in to monitor textile wastewater treatment, compliance and water
-            recovery across the Balotra cluster.
+            recovery across every ETP unit.
           </p>
           <div className="mt-8 space-y-3">
             {HIGHLIGHTS.map((h) => (
@@ -79,7 +79,7 @@ export default function LoginPage() {
           </div>
         </div>
         <div className="relative z-10 text-xs text-white/60">
-          © {new Date().getFullYear()} RSPCB · Balotra — Demonstration prototype
+          © {new Date().getFullYear()} JalRakshak — ETP Monitoring
         </div>
       </div>
 
@@ -94,7 +94,7 @@ export default function LoginPage() {
           </Button>
           <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-100 px-3 py-1.5 text-xs font-medium text-indigo-700">
             <Lock className="h-3.5 w-3.5" />
-            Secure demo login
+            Secure sign-in
           </span>
         </div>
 
@@ -115,7 +115,7 @@ export default function LoginPage() {
           </div>
 
           <h2 className="mt-4 font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Welcome back</h2>
-          <p className="mt-1.5 text-sm text-slate-500">Sign in to your RSPCB or textile-unit account.</p>
+          <p className="mt-1.5 text-sm text-slate-500">Sign in to your monitoring or textile-unit account.</p>
 
           {/* credentials */}
           <div className="mt-6 space-y-4">
@@ -145,7 +145,7 @@ export default function LoginPage() {
           </Button>
 
           <div className="mt-4 space-y-1.5 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
-            <p className="font-semibold text-slate-700">Demo accounts</p>
+            <p className="font-semibold text-slate-700">Sign-in accounts</p>
             <p>
               <span className="font-semibold text-slate-600">Monitoring Body</span> — <span className="text-slate-400">Email:</span> admin@rspcb.in · <span className="text-slate-400">Password:</span> rspcb123
             </p>

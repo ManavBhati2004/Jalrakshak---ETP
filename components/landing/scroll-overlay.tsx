@@ -48,12 +48,12 @@ export function ScrollOverlay({
 
       {/* headline — upper third */}
       <div className="relative z-10 px-6 pt-[5vh] text-center">
-        <div className="relative mx-auto h-[280px] max-w-3xl">
+        <div className="relative mx-auto h-[320px] max-w-3xl sm:h-[280px]">
           {/* polluted */}
           <motion.div style={{ opacity: pollutedOpacity }} className="absolute inset-x-0 top-0 flex flex-col items-center">
             <span className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-rose-500/25 px-4 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-white backdrop-blur-md">
               <TriangleAlert className="h-3.5 w-3.5" />
-              Rajasthan State Pollution Control Board
+              Untreated Industrial Effluent
             </span>
             <h1 className="font-display text-3xl font-extrabold leading-[1.05] tracking-tight text-white [text-shadow:0_2px_24px_rgba(0,0,0,0.55)] sm:text-5xl lg:text-6xl">
               Untreated Textile Wastewater

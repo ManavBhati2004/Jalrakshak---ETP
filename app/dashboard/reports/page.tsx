@@ -5,7 +5,7 @@ import { FileSpreadsheet, Download, CalendarDays, CalendarRange, Factory, Shield
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { useDataStore } from "@/lib/store/data";
-import { toCSV } from "@/lib/utils";
+import { toCSV, stampedName } from "@/lib/utils";
 
 const TODAY = "2026-06-20";
 
@@ -41,7 +41,7 @@ export default function ReportsPage() {
     const id = toast.loading(`Generating ${r.title}…`);
     setTimeout(() => {
       const rows = r.build() as Record<string, unknown>[];
-      download(`jalrakshak-${r.key}-${TODAY}.csv`, toCSV(rows));
+      download(stampedName(`jalrakshak-${r.key}`), toCSV(rows));
       toast.success(`${r.title} exported`, { id, description: `${rows.length} rows · Excel-ready CSV` });
       setBusy(null);
     }, 900);
@@ -52,7 +52,7 @@ export default function ReportsPage() {
       <PageHeader
         eyebrow="Governance"
         title="Reports & Exports"
-        description="Generate Excel-ready exports for inspections, audits and review meetings. Demo exports download real CSV files."
+        description="Generate Excel-ready exports for inspections, audits and review meetings. Exports download real CSV files."
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -81,7 +81,7 @@ export default function ReportsPage() {
       <div className="flex items-center gap-3 rounded-2xl border border-border bg-card p-5">
         <FileSpreadsheet className="h-6 w-6 text-emerald-400" />
         <p className="text-sm text-muted-foreground">
-          Exports are generated client-side from live demo state — submit a reading or register a member and re-export to see it reflected.
+          Exports are generated client-side from live state — submit a reading or register a member and re-export to see it reflected.
         </p>
       </div>
     </div>

@@ -51,21 +51,21 @@ export function AdminOverview() {
   }, [etpEntries, readings]);
 
   const metricCards = [
-    { label: "ETP Units", value: etpUnits.length, icon: "Droplets", accent: "#0d9488", delta: { value: "live", positive: true } },
-    { label: "Total Industries", value: metrics.totalIndustries, icon: "Factory", accent: "#8b5cf6" },
-    { label: "Pending Approvals", value: metrics.pendingApprovals, icon: "Clock", accent: "#f59e0b", hint: "Awaiting review" },
-    { label: "Rejected Entries", value: metrics.rejectedEntries, icon: "XCircle", accent: "#ef4444", hint: "This cycle" },
-    { label: "Non-Reporting", value: metrics.nonReporting, icon: "WifiOff", accent: "#fb923c", hint: "48h+ silent" },
-    { label: "Active Alerts", value: metrics.activeAlerts, icon: "BellRing", accent: "#0ea5e9", delta: { value: "live", positive: false } },
-    { label: "ETP Entries", value: etpEntries.length, icon: "FileSpreadsheet", accent: "#06b6d4", hint: "Submitted" },
+    { label: "ETP Units", value: etpUnits.length, icon: "Droplets", accent: "#0d9488", delta: { value: "live", positive: true }, href: "/dashboard/etp" },
+    { label: "Total Industries", value: metrics.totalIndustries, icon: "Factory", accent: "#8b5cf6", href: "/dashboard/industries" },
+    { label: "Pending Approvals", value: metrics.pendingApprovals, icon: "Clock", accent: "#f59e0b", hint: "Awaiting review", href: "/dashboard/approvals" },
+    { label: "Rejected Entries", value: metrics.rejectedEntries, icon: "XCircle", accent: "#ef4444", hint: "This cycle", href: "/dashboard/approvals" },
+    { label: "Non-Reporting", value: metrics.nonReporting, icon: "WifiOff", accent: "#fb923c", hint: "48h+ silent", href: "/dashboard/industries" },
+    { label: "Active Alerts", value: metrics.activeAlerts, icon: "BellRing", accent: "#0ea5e9", delta: { value: "live", positive: false }, href: "/dashboard/alerts" },
+    { label: "ETP Entries", value: etpEntries.length, icon: "FileSpreadsheet", accent: "#06b6d4", hint: "Submitted", href: "/dashboard/etp" },
   ];
 
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Monitoring Body · Demo session"
+        eyebrow="Monitoring Body"
         title="Command Center Overview"
-        description="A unified, real-time view of individual ETP treatment, water balance, industrial compliance, the alert engine and one-click reports across the Balotra cluster."
+        description="A unified, real-time view of individual ETP treatment, water balance, industrial compliance, the alert engine and one-click reports across every ETP unit."
       />
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">
@@ -139,7 +139,7 @@ export function AdminOverview() {
       </ListPanel>
 
       {/* alerts + approvals */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 md:grid-cols-2">
         <ListPanel title="Recent Alerts" href="/dashboard/alerts" empty="No active alerts">
           {recentAlerts.map((a) => (
             <div key={a.id} className="flex items-start gap-3 rounded-xl border border-border p-3">

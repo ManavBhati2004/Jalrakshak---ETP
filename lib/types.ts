@@ -1,5 +1,5 @@
 /* ============================================================
-   RSPCB JalRakshak — Domain Types
+   JalRakshak — Domain Types
    ============================================================ */
 
 export type RoleId = "monitoring-admin" | "etp";

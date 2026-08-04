@@ -1,15 +1,15 @@
 import type { Role, RoleId, AlertType, AlertSeverity, MeterPoint } from "./types";
 
-export const APP_NAME = "RSPCB JalRakshak";
+export const APP_NAME = "JalRakshak";
 export const APP_TAGLINE =
-  "An Initiative by Rajasthan State Pollution Control Board (RSPCB) – Balotra";
+  "Smart Monitoring for Individual Effluent Treatment Plants";
 
-/* ---------------- Roles (demo, no real auth) — three ---------------- */
+/* ---------------- Roles ---------------- */
 export const ROLES: Role[] = [
   {
     id: "monitoring-admin",
     name: "Monitoring Body",
-    description: "RSPCB authority. Full visibility across every individual ETP, reading, approval and report.",
+    description: "Regulatory authority. Full visibility across every individual ETP, reading, approval and report.",
     scope: "Super Admin · Sees Everything",
     icon: "ShieldCheck",
     accent: "#6366f1",

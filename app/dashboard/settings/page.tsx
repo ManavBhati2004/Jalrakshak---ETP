@@ -37,9 +37,9 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader eyebrow="System" title="Settings" description="Manage your demo session, alert preferences and platform data." />
+      <PageHeader eyebrow="System" title="Settings" description="Manage your session, alert preferences and platform data." />
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-5 md:grid-cols-2">
         {/* Session */}
         <Card title="Session & Role" icon={<UserCog className="h-4 w-4" />}>
           <div className="flex items-center gap-4 rounded-xl border border-border bg-muted/30 p-4">
@@ -98,17 +98,17 @@ export default function SettingsPage() {
         {/* Data management */}
         <Card title="Data Management" icon={<Database className="h-4 w-4" />}>
           <p className="text-sm text-muted-foreground">
-            All submissions are stored in your browser. Resetting restores the original demo dataset and clears your changes.
+            All submissions are stored in your browser. Resetting restores the original default dataset and clears your changes.
           </p>
           <Dialog>
             <DialogTrigger asChild>
               <Button variant="outline" className="mt-4 gap-2 rounded-xl border-red-500/40 text-red-400 hover:bg-red-500/10 hover:text-red-400">
-                <RotateCcw className="h-4 w-4" /> Reset demo data
+                <RotateCcw className="h-4 w-4" /> Reset data
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Reset demo data?</DialogTitle>
+                <DialogTitle>Reset data?</DialogTitle>
                 <DialogDescription>
                   This restores all readings, approvals, alerts and industries to the original seed. Your submitted entries will be lost.
                 </DialogDescription>
@@ -122,7 +122,7 @@ export default function SettingsPage() {
                     className="gap-2 rounded-lg bg-red-600 text-white hover:bg-red-600/90"
                     onClick={() => {
                       resetData();
-                      toast.success("Demo data reset to defaults");
+                      toast.success("Data reset to defaults");
                     }}
                   >
                     <RotateCcw className="h-4 w-4" /> Reset

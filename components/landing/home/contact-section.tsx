@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { SectionReveal } from "@/components/shared/section-reveal";
 
 const CONTACTS = [
-  { icon: Mail, label: "Demo Email", value: "jalrakshak-demo@rspcb.rajasthan.gov.in", sub: "Monitoring support desk" },
-  { icon: Phone, label: "Demo Helpline", value: "+91 2988 220 145", sub: "Mon–Sat · 9:00–18:00" },
-  { icon: MapPin, label: "Demo Office", value: "RSPCB Regional Office, Balotra", sub: "Barmer, Rajasthan 344022" },
+  { icon: Mail, label: "Email", value: "support@jalrakshak.in", sub: "Monitoring support desk" },
+  { icon: Phone, label: "Helpline", value: "+91 2988 220 145", sub: "Mon–Sat · 9:00–18:00" },
+  { icon: MapPin, label: "Office", value: "Regional Monitoring Office", sub: "Rajasthan, India" },
   { icon: Clock, label: "Monitoring", value: "24 × 7 Live", sub: "Automated alert engine" },
 ];
 
@@ -23,9 +23,8 @@ export function ContactSection() {
               Bring transparent water governance to your cluster.
             </h2>
             <p className="mt-4 max-w-md text-white/85">
-              This is a demonstration prototype. The contacts below are illustrative
-              only — use them to explore how an officer would reach the JalRakshak
-              support desk.
+              The contacts below show how an officer would reach the JalRakshak
+              monitoring support desk.
             </p>
             <Button
               asChild
@@ -33,7 +32,7 @@ export function ContactSection() {
               className="mt-7 h-12 rounded-full bg-white px-7 text-base font-semibold text-teal-700 hover:bg-white/90"
             >
               <Link href="/login">
-                Launch the demo
+                Launch the platform
                 <ArrowRight className="h-4 w-4" />
               </Link>
             </Button>

@@ -59,14 +59,13 @@ export function AboutSlideshow() {
   return (
     <section id="about" className="relative mx-auto max-w-7xl px-5 py-24 sm:px-8">
       <SectionReveal className="mx-auto mb-12 max-w-2xl text-center">
-        <span className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">About RSPCB JalRakshak</span>
+        <span className="text-sm font-semibold uppercase tracking-[0.2em] text-primary">About JalRakshak</span>
         <h2 className="mt-3 font-display text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
           Mandated to protect water. Built for transparency.
         </h2>
         <p className="mt-4 text-muted-foreground">
-          A digital initiative of the Rajasthan State Pollution Control Board for the
-          Balotra textile cluster — making every drop of industrial wastewater
-          accountable.
+          A digital initiative for the textile industry — making every drop of
+          industrial wastewater accountable.
         </p>
       </SectionReveal>
 

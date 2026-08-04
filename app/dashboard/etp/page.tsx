@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { STATUS_COLOR, complianceStatus } from "@/lib/constants";
-import { formatNumber, formatDate, toCSV } from "@/lib/utils";
+import { formatNumber, formatDate, toCSV, stampedName } from "@/lib/utils";
 import type { EtpEntry, Industry } from "@/lib/types";
 
 export default function IndividualEtpPage() {
@@ -155,9 +155,7 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
       Status: e.status,
       "Submitted At": e.submittedAt,
     }));
-    const n = new Date();
-    const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
-    download(`jalrakshak-etp-${ind.id}-${today}.csv`, toCSV(rows));
+    download(stampedName(`jalrakshak-etp-${ind.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${ind.name}` });
   };
 

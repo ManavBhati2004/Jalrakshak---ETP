@@ -409,7 +409,7 @@ export const useDataStore = create<DataState>()(
           roStage4: input.roStage4,
           lastReadingAt: null,
           alertsCount: 0,
-          registeredAt: new Date().toISOString().slice(0, 10),
+          registeredAt: new Date().toISOString(),
         };
         set((s) => ({
           industries: [industry, ...s.industries],

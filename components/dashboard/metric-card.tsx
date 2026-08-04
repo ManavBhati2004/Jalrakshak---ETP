@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { motion } from "framer-motion";
 import { ArrowDownRight, ArrowUpRight } from "lucide-react";
 import { Icon } from "@/components/shared/icon";
@@ -15,6 +16,7 @@ export interface MetricCardProps {
   delta?: { value: string; positive?: boolean };
   hint?: string;
   index?: number;
+  href?: string;
 }
 
 export function MetricCard({
@@ -26,14 +28,21 @@ export function MetricCard({
   delta,
   hint,
   index = 0,
+  href,
 }: MetricCardProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 18 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.06, duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-      className="group relative overflow-hidden rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/30 sm:p-5"
+      className={cn(
+        "group relative overflow-hidden rounded-2xl border border-border bg-card p-4 transition-colors hover:border-primary/30 sm:p-5",
+        href && "cursor-pointer hover:shadow-sm",
+      )}
     >
+      {href && (
+        <Link href={href} className="absolute inset-0 z-10" aria-label={label} />
+      )}
       <div
         className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full opacity-15 blur-2xl transition-opacity group-hover:opacity-30"
         style={{ background: `radial-gradient(circle, ${accent}, transparent 70%)` }}
