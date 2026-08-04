@@ -11,10 +11,8 @@ import type {
   TrendPoint,
   ReadingShift,
   EtpEntry,
-  MeterReading,
-  SludgeLedger,
 } from "@/lib/types";
-import { complianceStatus, ALERT_META, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
+import { complianceStatus, ALERT_META } from "@/lib/constants";
 
 export const industries = industriesRaw as Industry[];
 
@@ -270,115 +268,29 @@ export function buildEtpEntries(): EtpEntry[] {
   const etpUnits = industries.filter((i) => i.isIndividualETP);
   for (const ind of etpUnits) {
     const rnd = mulberry32(hashStr(ind.id + "etp"));
-    // Cumulative meter readings, carried forward day to day (initial = prior final).
-    const waterCum: Record<string, number> = {};
-    const energyCum: Record<string, number> = {};
-    for (const m of WATER_METERS) waterCum[m.key] = Math.round(ind.permittedKLD * (50 + rnd() * 50));
-    for (const m of ENERGY_METERS) energyCum[m.key] = Math.round(ind.permittedKLD * (200 + rnd() * 100));
-    let sludgeBal = Math.round(ind.permittedKLD * (20 + rnd() * 20)); // kg opening
-    let saltBal = Math.round(ind.permittedKLD * (5 + rnd() * 10)); // kg opening
-
     for (let d = 3; d >= 1; d--) {
-      // daily water volumes (M3)
       const fresh = Math.round(ind.permittedKLD * (0.7 + rnd() * 0.25));
       const etpInlet = Math.round(ind.permittedKLD * (0.85 + rnd() * 0.15));
-      const etpReuse = Math.round(etpInlet * (0.15 + rnd() * 0.1));
-      const tertiary = Math.round(etpInlet * (0.25 + rnd() * 0.1));
-      const roFeed = Math.round(etpInlet * (0.7 + rnd() * 0.1));
-      const roPermeate = Math.round(roFeed * (0.62 + rnd() * 0.08));
-      const roReject = Math.max(0, roFeed - roPermeate);
-      const meeFeed = Math.round(roReject * (0.6 + rnd() * 0.2));
-      const meeCondensate = Math.round(meeFeed * (0.7 + rnd() * 0.1));
-      const meeReject = Math.max(0, meeFeed - meeCondensate);
-      const dailyWater: Record<string, number> = {
-        rawFreshWater: fresh,
-        etpInlet,
-        etpTreatedReuse: etpReuse,
-        tertiaryTreated: tertiary,
-        roFeed,
-        roPermeate,
-        roReject,
-        meeFeed,
-        meeCondensate,
-        meeReject,
-      };
-      const water: Record<string, MeterReading> = {};
-      for (const m of WATER_METERS) {
-        const initial = waterCum[m.key];
-        const total = dailyWater[m.key] ?? 0;
-        const final = initial + total;
-        water[m.key] = { initial, final, total };
-        waterCum[m.key] = final;
-      }
-      const waterGrandTotal = Object.values(water).reduce((s, mm) => s + mm.total, 0);
-
-      // daily energy (kWh)
-      const dailyEnergy: Record<string, number> = {
-        etpInletEnergy: Math.round(ind.permittedKLD * (2 + rnd() * 1)),
-        roRejectEnergy: Math.round(ind.permittedKLD * (1 + rnd() * 0.5)),
-        meeRejectEnergy: Math.round(ind.permittedKLD * (3 + rnd() * 1)),
-      };
-      const energy: Record<string, MeterReading> = {};
-      for (const m of ENERGY_METERS) {
-        const initial = energyCum[m.key];
-        const total = dailyEnergy[m.key] ?? 0;
-        const final = initial + total;
-        energy[m.key] = { initial, final, total };
-        energyCum[m.key] = final;
-      }
-
-      // sludge ledger (kg) — dispatch on the middle day
-      const sludgeGen = Math.round(ind.permittedKLD * (1.5 + rnd() * 1));
-      const sludgeDispatch = d === 2 ? Math.round(sludgeBal * 0.5) : 0;
-      const sludgeOpening = sludgeBal;
-      const sludgeClose = sludgeOpening + sludgeGen - sludgeDispatch;
-      const sludge: SludgeLedger = {
-        opening: sludgeOpening,
-        generation: sludgeGen,
-        dateOfDisposal: sludgeDispatch > 0 ? dayISO(d).slice(0, 10) : "",
-        dispatch: sludgeDispatch,
-        manifestNo: sludgeDispatch > 0 ? `MF-${ind.id}-${d}` : "",
-        closing: sludgeClose,
-        remark: "",
-      };
-      sludgeBal = sludgeClose;
-
-      // MEE salt ledger (kg)
-      const saltGen = Math.round(ind.permittedKLD * (0.5 + rnd() * 0.5));
-      const saltOpening = saltBal;
-      const saltClose = saltOpening + saltGen;
-      const salt: SludgeLedger = {
-        opening: saltOpening,
-        generation: saltGen,
-        dateOfDisposal: "",
-        dispatch: 0,
-        manifestNo: "",
-        closing: saltClose,
-        remark: "",
-      };
-      saltBal = saltClose;
-
-      const totalWaterIntake = water.rawFreshWater.total + water.etpTreatedReuse.total + water.roPermeate.total;
-
+      const etpOutlet = Math.round(etpInlet * (0.88 + rnd() * 0.07));
+      const etpReuse = Math.round(etpOutlet * (0.18 + rnd() * 0.1));
+      const roInlet = Math.round(etpOutlet * (0.78 + rnd() * 0.1));
+      const roPermeate = Math.round(roInlet * (0.62 + rnd() * 0.08));
+      const roReject = Math.max(0, roInlet - roPermeate);
+      const sludgeToTSDF = Math.round(ind.permittedKLD * (0.02 + rnd() * 0.03));
       entries.push({
         id: `E-${String(++n).padStart(4, "0")}`,
         industryId: ind.id,
         industryName: ind.name,
         date: dayISO(d).slice(0, 10),
-        water,
-        waterGrandTotal,
-        waterRemark: "",
-        energy,
-        energyRemark: "",
-        sludge,
-        salt,
-        freshWaterConsumption: water.rawFreshWater.total,
-        etpInlet: water.etpInlet.total,
-        etpReuse: water.etpTreatedReuse.total,
-        roInlet: water.roFeed.total,
-        roReject: water.roReject.total,
-        roPermeate: water.roPermeate.total,
-        totalWaterIntake,
+        freshWaterConsumption: fresh,
+        etpInlet,
+        etpOutlet,
+        etpReuse,
+        roInlet,
+        roReject,
+        roPermeate,
+        sludgeToTSDF,
+        totalWaterIntake: fresh + etpReuse + roPermeate,
         unit: "KL",
         status: d === 1 ? "pending" : "approved",
         submittedAt: dayISO(d, "09:00"),

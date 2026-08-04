@@ -12,7 +12,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Icon } from "@/components/shared/icon";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/lib/store/auth";
-import { useDataStore, dailyIntake, etpEntryExportRows } from "@/lib/store/data";
+import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
 import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
@@ -65,23 +65,23 @@ export function EtpOverview() {
   const color = STATUS_COLOR[complianceStatus(industry.complianceScore)];
 
   const balance = [
-    { label: "Fresh Water", value: latest?.freshWaterConsumption, unit: "m³", icon: Droplets, accent: "#0ea5e9" },
-    { label: "ETP Reuse", value: latest?.etpReuse, unit: "m³", icon: Recycle, accent: "#10b981" },
-    { label: "RO Permeate", value: latest?.roPermeate, unit: "m³", icon: Waves, accent: "#6366f1" },
-    { label: "RO Reject", value: latest?.roReject, unit: "m³", icon: Waves, accent: "#f59e0b" },
-    { label: "Grand Total", value: latest?.waterGrandTotal, unit: "m³", icon: Gauge, accent: "#0d9488" },
-    { label: "Sludge Gen", value: latest?.sludge?.generation, unit: "kg", icon: Trash2, accent: "#a78bfa" },
+    { label: "Fresh Water", value: latest?.freshWaterConsumption, icon: Droplets, accent: "#0ea5e9" },
+    { label: "ETP Reuse", value: latest?.etpReuse, icon: Recycle, accent: "#10b981" },
+    { label: "RO Permeate", value: latest?.roPermeate, icon: Waves, accent: "#6366f1" },
+    { label: "RO Reject", value: latest?.roReject, icon: Waves, accent: "#f59e0b" },
+    { label: "Sludge → TSDF", value: latest?.sludgeToTSDF, icon: Trash2, accent: "#a78bfa" },
   ];
 
   const columns: ColumnDef<EtpEntry>[] = [
     { accessorKey: "date", header: "Date", cell: ({ row }) => <span className="whitespace-nowrap text-sm text-foreground">{formatDate(row.original.date)}</span> },
     { accessorKey: "freshWaterConsumption", header: "Fresh Water", cell: ({ row }) => <Num v={row.original.freshWaterConsumption} /> },
     { accessorKey: "etpInlet", header: "ETP Inlet", cell: ({ row }) => <Num v={row.original.etpInlet} /> },
+    { accessorKey: "etpOutlet", header: "ETP Outlet", cell: ({ row }) => <Num v={row.original.etpOutlet} /> },
     { accessorKey: "etpReuse", header: "ETP Reuse", cell: ({ row }) => <Num v={row.original.etpReuse} /> },
-    { accessorKey: "roInlet", header: "RO Feed", cell: ({ row }) => <Num v={row.original.roInlet} /> },
+    { accessorKey: "roInlet", header: "RO Inlet", cell: ({ row }) => <Num v={row.original.roInlet} /> },
     { accessorKey: "roReject", header: "RO Reject", cell: ({ row }) => <Num v={row.original.roReject} /> },
     { accessorKey: "roPermeate", header: "RO Permeate", cell: ({ row }) => <Num v={row.original.roPermeate} /> },
-    { accessorKey: "waterGrandTotal", header: "Grand Total", cell: ({ row }) => <Num v={row.original.waterGrandTotal ?? 0} /> },
+    { accessorKey: "sludgeToTSDF", header: "Sludge→TSDF", cell: ({ row }) => <Num v={row.original.sludgeToTSDF} /> },
     {
       accessorKey: "totalWaterIntake",
       header: "Total Intake",
@@ -96,7 +96,20 @@ export function EtpOverview() {
 
   const handleDownload = () => {
     if (!mine.length) return;
-    const rows = etpEntryExportRows(mine);
+    const rows = mine.map((e) => ({
+      Date: e.date,
+      "Fresh Water (m³)": e.freshWaterConsumption,
+      "ETP Inlet (m³)": e.etpInlet,
+      "ETP Outlet (m³)": e.etpOutlet,
+      "ETP Reuse (m³)": e.etpReuse,
+      "RO Inlet (m³)": e.roInlet,
+      "RO Reject (m³)": e.roReject,
+      "RO Permeate (m³)": e.roPermeate,
+      "Sludge to TSDF (m³)": e.sludgeToTSDF,
+      "Total Water Intake (m³)": e.totalWaterIntake,
+      Status: e.status,
+      "Submitted At": e.submittedAt,
+    }));
     download(stampedName(`jalrakshak-etp-${industry.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${industry.name}` });
   };
@@ -180,7 +193,7 @@ export function EtpOverview() {
                 {b.icon ? <b.icon className="h-4 w-4" /> : <Droplets className="h-4 w-4" />}
               </span>
               <p className="mt-3 font-mono text-xl font-bold text-foreground sm:text-2xl">
-                {b.value != null ? formatNumber(b.value) : "—"} <span className="text-xs font-medium text-muted-foreground">{b.unit}</span>
+                {b.value != null ? formatNumber(b.value) : "—"} <span className="text-xs font-medium text-muted-foreground">m³</span>
               </p>
               <p className="text-xs text-muted-foreground">{b.label}</p>
             </div>

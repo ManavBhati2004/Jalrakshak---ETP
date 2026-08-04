@@ -12,8 +12,6 @@ import type {
   MeterPoint,
   CetpId,
   EtpEntry,
-  MeterReading,
-  SludgeLedger,
 } from "@/lib/types";
 import {
   industries as seedIndustries,
@@ -24,7 +22,7 @@ import {
   buildEtpEntries,
   buildEtpApprovals,
 } from "@/lib/data/seed";
-import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
+import { ALERT_META, complianceStatus } from "@/lib/constants";
 
 export interface ReadingInput {
   industryId: string;
@@ -58,46 +56,19 @@ export interface RegisterInput {
   roStage2?: number;
   roStage3?: number;
   roStage4?: number;
-  // RSPCB prescribed-return fields (Fateh spec §1)
-  tehsil?: string;
-  district?: string;
-  misId?: string;
-  consentOrderNo?: string;
-  consentOrderDate?: string;
-  consentValidFrom?: string;
-  consentValidTo?: string;
-  hwmAuthNo?: string;
-  hwmAuthDate?: string;
-  hwmValidFrom?: string;
-  hwmValidTo?: string;
-  authorisedQuantityKg?: number;
-  tsdfName?: string;
-  tsdfAddress?: string;
-  signatoryName?: string;
-  signatoryDesignation?: string;
 }
 
-export interface MeterInput {
-  initial: number;
-  final: number;
-}
-export interface LedgerInput {
-  opening: number;
-  generation: number;
-  dateOfDisposal: string;
-  dispatch: number;
-  manifestNo: string;
-  remark: string;
-}
 export interface EtpEntryInput {
   industryId: string;
   date: string;
-  water: Record<string, MeterInput>;
-  waterRemark: string;
-  energy: Record<string, MeterInput>;
-  energyRemark: string;
-  sludge: LedgerInput;
-  salt: LedgerInput;
+  freshWaterConsumption: number;
+  etpInlet: number;
+  etpOutlet: number;
+  etpReuse: number;
+  roInlet: number;
+  roReject: number;
+  roPermeate: number;
+  sludgeToTSDF: number;
 }
 
 interface DataState {
@@ -243,59 +214,23 @@ export const useDataStore = create<DataState>()(
 
       submitEtpEntry: (input) => {
         const ind = get().industries.find((i) => i.id === input.industryId);
+        const totalWaterIntake = input.freshWaterConsumption + input.etpReuse + input.roPermeate;
         const id = `E-${Date.now().toString(36).toUpperCase()}`;
         const submittedAt = nowISO();
-
-        const toMeter = (m: MeterInput): MeterReading => ({
-          initial: m.initial,
-          final: m.final,
-          total: Math.max(0, m.final - m.initial),
-        });
-        const water: Record<string, MeterReading> = {};
-        for (const k of Object.keys(input.water)) water[k] = toMeter(input.water[k]);
-        const energy: Record<string, MeterReading> = {};
-        for (const k of Object.keys(input.energy)) energy[k] = toMeter(input.energy[k]);
-        const waterGrandTotal = Object.values(water).reduce((sum, m) => sum + m.total, 0);
-
-        const toLedger = (l: LedgerInput): SludgeLedger => ({
-          opening: l.opening,
-          generation: l.generation,
-          dateOfDisposal: l.dateOfDisposal,
-          dispatch: l.dispatch,
-          manifestNo: l.manifestNo,
-          closing: l.opening + l.generation - l.dispatch,
-          remark: l.remark,
-        });
-        const sludge = toLedger(input.sludge);
-        const salt = toLedger(input.salt);
-
-        // Derived legacy summary from the water-meter totals.
-        const freshWaterConsumption = water.rawFreshWater?.total ?? 0;
-        const etpInlet = water.etpInlet?.total ?? 0;
-        const etpReuse = water.etpTreatedReuse?.total ?? 0;
-        const roInlet = water.roFeed?.total ?? 0;
-        const roReject = water.roReject?.total ?? 0;
-        const roPermeate = water.roPermeate?.total ?? 0;
-        const totalWaterIntake = freshWaterConsumption + etpReuse + roPermeate;
 
         const entry: EtpEntry = {
           id,
           industryId: input.industryId,
           industryName: ind?.name ?? "Unknown",
           date: input.date,
-          water,
-          waterGrandTotal,
-          waterRemark: input.waterRemark,
-          energy,
-          energyRemark: input.energyRemark,
-          sludge,
-          salt,
-          freshWaterConsumption,
-          etpInlet,
-          etpReuse,
-          roInlet,
-          roReject,
-          roPermeate,
+          freshWaterConsumption: input.freshWaterConsumption,
+          etpInlet: input.etpInlet,
+          etpOutlet: input.etpOutlet,
+          etpReuse: input.etpReuse,
+          roInlet: input.roInlet,
+          roReject: input.roReject,
+          roPermeate: input.roPermeate,
+          sludgeToTSDF: input.sludgeToTSDF,
           totalWaterIntake,
           unit: "KL",
           status: "pending",
@@ -498,22 +433,6 @@ export const useDataStore = create<DataState>()(
           roStage2: input.roStage2,
           roStage3: input.roStage3,
           roStage4: input.roStage4,
-          tehsil: input.tehsil,
-          district: input.district,
-          misId: input.misId,
-          consentOrderNo: input.consentOrderNo,
-          consentOrderDate: input.consentOrderDate,
-          consentValidFrom: input.consentValidFrom,
-          consentValidTo: input.consentValidTo,
-          hwmAuthNo: input.hwmAuthNo,
-          hwmAuthDate: input.hwmAuthDate,
-          hwmValidFrom: input.hwmValidFrom,
-          hwmValidTo: input.hwmValidTo,
-          authorisedQuantityKg: input.authorisedQuantityKg,
-          tsdfName: input.tsdfName,
-          tsdfAddress: input.tsdfAddress,
-          signatoryName: input.signatoryName,
-          signatoryDesignation: input.signatoryDesignation,
           lastReadingAt: null,
           alertsCount: 0,
           registeredAt: new Date().toISOString(),
@@ -546,13 +465,13 @@ export const useDataStore = create<DataState>()(
     }),
     {
       name: "jalrakshak-data",
-      version: 5,
+      version: 6,
       skipHydration: true,
       storage: createJSONStorage(() => firestoreStorage),
-      // v5 rebuilt EtpEntry to the RSPCB prescribed shape (10 water + 3 energy
-      // meters with initial/final/total, plus kg sludge/salt ledgers). Any older
-      // persisted shape is incompatible, so reset it to the current seed.
-      migrate: (persisted, version) => (version < 5 ? seed() : persisted) as DataState,
+      // The ETP data model reverted from the RSPCB prescribed-return shape (v5) back
+      // to the flat water-balance figures. Reset anything older than v6 to the
+      // current seed so no stale/mixed EtpEntry shape survives.
+      migrate: (persisted, version) => (version < 6 ? seed() : persisted) as DataState,
     },
   ),
 );
@@ -575,39 +494,6 @@ export function dailyIntake(entries: EtpEntry[], todayStr: string, yesterdayStr:
   const today = entries.find((e) => e.date === todayStr)?.totalWaterIntake ?? 0;
   const yesterday = entries.find((e) => e.date === yesterdayStr)?.totalWaterIntake ?? 0;
   return { today, yesterday, difference: today - yesterday };
-}
-
-/** Most recent prior entry for a unit (by date) — source of the carry-forward readings. */
-export function latestEntryFor(entries: EtpEntry[], industryId: string): EtpEntry | undefined {
-  return entries
-    .filter((e) => e.industryId === industryId)
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.submittedAt.localeCompare(a.submittedAt)))[0];
-}
-
-/** Flatten ETP entries to labelled CSV rows (nested meters → one column each). */
-export function etpEntryExportRows(entries: EtpEntry[]): Record<string, unknown>[] {
-  return entries.map((e) => {
-    const row: Record<string, unknown> = { Date: e.date };
-    for (const m of WATER_METERS) row[`${m.label} (M3)`] = e.water?.[m.key]?.total ?? 0;
-    row["Water Grand Total (M3)"] = e.waterGrandTotal;
-    for (const m of ENERGY_METERS) row[`${m.label} (kWh)`] = e.energy?.[m.key]?.total ?? 0;
-    row["Sludge Generated (kg)"] = e.sludge?.generation ?? 0;
-    row["Sludge Dispatched (kg)"] = e.sludge?.dispatch ?? 0;
-    row["Sludge Closing (kg)"] = e.sludge?.closing ?? 0;
-    row["Salt Generated (kg)"] = e.salt?.generation ?? 0;
-    row["Salt Dispatched (kg)"] = e.salt?.dispatch ?? 0;
-    row["Salt Closing (kg)"] = e.salt?.closing ?? 0;
-    row["Total Water Intake (M3)"] = e.totalWaterIntake;
-    row["Water Remark"] = e.waterRemark ?? "";
-    row["Status"] = e.status;
-    row["Submitted At"] = e.submittedAt;
-    return row;
-  });
-}
-
-/** Cumulative dispatched quantity (kg) for a ledger across a unit's history. */
-export function cumulativeDispatch(entries: EtpEntry[], industryId: string, ledger: "sludge" | "salt"): number {
-  return entries.filter((e) => e.industryId === industryId).reduce((sum, e) => sum + (e[ledger]?.dispatch ?? 0), 0);
 }
 
 export function selectMetrics(s: DataState): DashboardMetrics {

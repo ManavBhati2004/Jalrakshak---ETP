@@ -59,44 +59,9 @@ export interface Industry {
   roStage2?: number;
   roStage3?: number;
   roStage4?: number;
-  // ---- RSPCB prescribed-return registration fields (Fateh spec §1) ----
-  tehsil?: string;
-  district?: string;
-  misId?: string;
-  consentOrderNo?: string;
-  consentOrderDate?: string;
-  consentValidFrom?: string;
-  consentValidTo?: string;
-  hwmAuthNo?: string;
-  hwmAuthDate?: string;
-  hwmValidFrom?: string;
-  hwmValidTo?: string;
-  authorisedQuantityKg?: number; // hazardous-waste authorised quantity, stored in kg
-  tsdfName?: string;
-  tsdfAddress?: string;
-  signatoryName?: string;
-  signatoryDesignation?: string;
   lastReadingAt: string | null;
   alertsCount: number;
   registeredAt: string;
-}
-
-/** One meter's daily record: Total = Final − Initial (auto). */
-export interface MeterReading {
-  initial: number;
-  final: number;
-  total: number;
-}
-
-/** Day-wise hazardous-waste ledger row, all quantities in kg. */
-export interface SludgeLedger {
-  opening: number; // carried from the previous entry's closing
-  generation: number;
-  dateOfDisposal: string; // "" when nothing dispatched
-  dispatch: number;
-  manifestNo: string;
-  closing: number; // = opening + generation − dispatch (auto)
-  remark: string;
 }
 
 export type MeterPoint =
@@ -113,33 +78,20 @@ export type MeterPoint =
 
 export type ReadingStatus = "pending" | "approved" | "rejected";
 
-/**
- * Daily entry for an individual ETP unit, aligned to the RSPCB prescribed return
- * (Fateh spec §2–§4): 10 water meters + 3 energy meters (each initial/final/total)
- * and two kg ledgers (ETP sludge + MEE salt). Legacy summary scalars are derived
- * from the water-meter totals so existing dashboards/CSV keep working.
- * Water meters are in M3, energy in kWh, ledgers in kg.
- */
+/** Daily water-balance entry for an individual ETP unit. All values in KL. */
 export interface EtpEntry {
   id: string;
   industryId: string;
   industryName: string;
   date: string;
-  // structured meter readings (keyed by the meter keys in lib/constants)
-  water: Record<string, MeterReading>; // 10 water meters (M3)
-  waterGrandTotal: number; // auto-sum of all water totals
-  waterRemark: string;
-  energy: Record<string, MeterReading>; // 3 energy meters (kWh)
-  energyRemark: string;
-  sludge: SludgeLedger; // ETP sludge (kg)
-  salt: SludgeLedger; // ATFD / PAN salt, MEE section (kg)
-  // ---- derived legacy summary (water-meter totals) ----
-  freshWaterConsumption: number; // water.rawFreshWater.total
-  etpInlet: number; // water.etpInlet.total
-  etpReuse: number; // water.etpTreatedReuse.total
-  roInlet: number; // water.roFeed.total
-  roReject: number; // water.roReject.total
-  roPermeate: number; // water.roPermeate.total
+  freshWaterConsumption: number;
+  etpInlet: number;
+  etpOutlet: number;
+  etpReuse: number;
+  roInlet: number;
+  roReject: number;
+  roPermeate: number;
+  sludgeToTSDF: number;
   totalWaterIntake: number; // = freshWaterConsumption + etpReuse + roPermeate
   unit: "KL";
   status: ReadingStatus;

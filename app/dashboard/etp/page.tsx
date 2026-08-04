@@ -9,7 +9,7 @@ import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { DataTable } from "@/components/dashboard/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
-import { useDataStore, etpEntryExportRows } from "@/lib/store/data";
+import { useDataStore } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { STATUS_COLOR, complianceStatus } from "@/lib/constants";
 import { formatNumber, formatDate, toCSV, stampedName } from "@/lib/utils";
@@ -121,11 +121,12 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
     { accessorKey: "date", header: "Date", cell: ({ row }) => <span className="whitespace-nowrap text-sm text-foreground">{formatDate(row.original.date)}</span> },
     { accessorKey: "freshWaterConsumption", header: "Fresh Water", cell: ({ row }) => <NumCell v={row.original.freshWaterConsumption} /> },
     { accessorKey: "etpInlet", header: "ETP Inlet", cell: ({ row }) => <NumCell v={row.original.etpInlet} /> },
+    { accessorKey: "etpOutlet", header: "ETP Outlet", cell: ({ row }) => <NumCell v={row.original.etpOutlet} /> },
     { accessorKey: "etpReuse", header: "ETP Reuse", cell: ({ row }) => <NumCell v={row.original.etpReuse} /> },
-    { accessorKey: "roInlet", header: "RO Feed", cell: ({ row }) => <NumCell v={row.original.roInlet} /> },
+    { accessorKey: "roInlet", header: "RO Inlet", cell: ({ row }) => <NumCell v={row.original.roInlet} /> },
     { accessorKey: "roReject", header: "RO Reject", cell: ({ row }) => <NumCell v={row.original.roReject} /> },
     { accessorKey: "roPermeate", header: "RO Permeate", cell: ({ row }) => <NumCell v={row.original.roPermeate} /> },
-    { accessorKey: "waterGrandTotal", header: "Grand Total", cell: ({ row }) => <NumCell v={row.original.waterGrandTotal ?? 0} /> },
+    { accessorKey: "sludgeToTSDF", header: "Sludge→TSDF", cell: ({ row }) => <NumCell v={row.original.sludgeToTSDF} /> },
     {
       accessorKey: "totalWaterIntake",
       header: "Total Intake",
@@ -140,7 +141,20 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
 
   const handleDownload = () => {
     if (!mine.length) return;
-    const rows = etpEntryExportRows(mine);
+    const rows = mine.map((e) => ({
+      Date: e.date,
+      "Fresh Water (m³)": e.freshWaterConsumption,
+      "ETP Inlet (m³)": e.etpInlet,
+      "ETP Outlet (m³)": e.etpOutlet,
+      "ETP Reuse (m³)": e.etpReuse,
+      "RO Inlet (m³)": e.roInlet,
+      "RO Reject (m³)": e.roReject,
+      "RO Permeate (m³)": e.roPermeate,
+      "Sludge to TSDF (m³)": e.sludgeToTSDF,
+      "Total Water Intake (m³)": e.totalWaterIntake,
+      Status: e.status,
+      "Submitted At": e.submittedAt,
+    }));
     download(stampedName(`jalrakshak-etp-${ind.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${ind.name}` });
   };
@@ -194,7 +208,7 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
             <Mini label="Total Intake" value={latest?.totalWaterIntake} accent="#0d9488" />
             <Mini label="ETP Reuse" value={latest?.etpReuse} accent="#10b981" />
             <Mini label="RO Permeate" value={latest?.roPermeate} accent="#6366f1" />
-            <Mini label="Grand Total" value={latest?.waterGrandTotal} accent="#a78bfa" />
+            <Mini label="Sludge→TSDF" value={latest?.sludgeToTSDF} accent="#a78bfa" />
           </div>
         </div>
 

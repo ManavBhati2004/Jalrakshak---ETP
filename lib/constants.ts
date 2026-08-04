@@ -91,34 +91,6 @@ export const READING_TIMES = [
   { value: "20:00", label: "08:00 PM (Evening)", shift: "evening" as const },
 ];
 
-/* ---------------- RSPCB prescribed daily meters (Fateh spec §2–§3) ---------------- */
-/** The 10 water meters — labels reproduced verbatim from the prescribed sheet. Unit: M3. */
-export const WATER_METERS = [
-  { key: "rawFreshWater", label: "Raw Fresh Water / Fresh Water Input" },
-  { key: "etpInlet", label: "ETP inlet Section-Total of all stream" },
-  { key: "etpTreatedReuse", label: "ETP Treated directly Reuse" },
-  { key: "tertiaryTreated", label: "Tertiary Treated Section-Total" },
-  { key: "roFeed", label: "RO Section Total Feed" },
-  { key: "roPermeate", label: "Total RO permeate Common Meter" },
-  { key: "roReject", label: "RO Reject Section-Total" },
-  { key: "meeFeed", label: "MEE Feed Section Total" },
-  { key: "meeCondensate", label: "Total MEE Condensate / MEE Condensate Reuse" },
-  { key: "meeReject", label: "MEE Reject Section Total" },
-] as const;
-
-/** The 3 daily energy meters — labels reproduced verbatim. Unit: kWh. */
-export const ENERGY_METERS = [
-  { key: "etpInletEnergy", label: "ETP inlet Section-Total of all stream" },
-  { key: "roRejectEnergy", label: "RO Reject Section-Total" },
-  { key: "meeRejectEnergy", label: "MEE Reject Section Total" },
-] as const;
-
-export type WaterMeterKey = (typeof WATER_METERS)[number]["key"];
-export type EnergyMeterKey = (typeof ENERGY_METERS)[number]["key"];
-
-/** Warn once cumulative sludge/salt dispatch reaches this fraction of the authorised quantity. */
-export const SLUDGE_WARN_RATIO = 0.9;
-
 /* ---------------- Alert metadata ---------------- */
 export const ALERT_META: Record<
   AlertType,
