@@ -68,6 +68,14 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ---- Trusted-time ping ---------------------------------------------------
+    // A signed-in user writes serverTimestamp() to their own doc and reads it
+    // back to obtain trusted server time (used to detect device-clock tampering
+    // on ETP entry). Scoped to the owner's uid — no cross-user access.
+    match /serverClock/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
     // Everything else is denied by default.
   }
 }

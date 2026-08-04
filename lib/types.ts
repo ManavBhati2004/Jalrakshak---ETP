@@ -212,7 +212,8 @@ export type AlertType =
   | "reading-mismatch"
   | "repeated-reading"
   | "missing-photo"
-  | "rejected-entry";
+  | "rejected-entry"
+  | "time-tamper";
 
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 export type AlertStatus = "active" | "acknowledged" | "resolved";

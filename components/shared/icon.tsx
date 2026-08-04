@@ -25,6 +25,7 @@ import {
   Repeat,
   ImageOff,
   XCircle,
+  AlarmClock,
   Circle,
   type LucideIcon,
 } from "lucide-react";
@@ -54,6 +55,7 @@ const REGISTRY: Record<string, LucideIcon> = {
   Repeat,
   ImageOff,
   XCircle,
+  AlarmClock,
 };
 
 export function Icon({

@@ -71,7 +71,7 @@ export function Topbar() {
         </span>
 
         <Button asChild variant="ghost" size="icon" className="relative">
-          <Link href={admin ? "/dashboard/alerts" : "/dashboard"} aria-label="Alerts">
+          <Link href="/dashboard/alerts" aria-label="Alerts">
             <Bell className="h-5 w-5" />
             {hydrated && activeAlerts > 0 && (
               <span className="absolute -right-0.5 -top-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">

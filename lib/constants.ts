@@ -44,6 +44,7 @@ const ETP: RoleId[] = ["etp"];
 export const DASHBOARD_NAV: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: "LayoutDashboard", group: "Overview", roles: ALL },
   { label: "ETP Data Entry", href: "/dashboard/etp-entry", icon: "ClipboardCheck", group: "Overview", roles: ETP },
+  { label: "Alerts", href: "/dashboard/alerts", icon: "BellRing", group: "Overview", roles: ETP },
   { label: "Industries", href: "/dashboard/industries", icon: "Factory", group: "Monitoring", roles: ADMIN },
   { label: "ETP Units", href: "/dashboard/etp", icon: "Droplets", group: "Monitoring", roles: ADMIN },
   { label: "Approvals", href: "/dashboard/approvals", icon: "CheckCircle2", group: "Governance", roles: ADMIN },
@@ -51,12 +52,13 @@ export const DASHBOARD_NAV: NavItem[] = [
   { label: "Alerts", href: "/dashboard/alerts", icon: "BellRing", group: "Governance", roles: ADMIN },
 ];
 
+// /dashboard/alerts is intentionally NOT admin-only: ETP operators may view their
+// own unit's alerts there (the page scopes + hides admin actions by role).
 export const ADMIN_ONLY_PATHS = [
   "/dashboard/industries",
   "/dashboard/etp",
   "/dashboard/approvals",
   "/dashboard/compliance",
-  "/dashboard/alerts",
   "/dashboard/reports",
 ];
 export const ETP_ONLY_PATHS = ["/dashboard/etp-entry"];
@@ -131,6 +133,7 @@ export const ALERT_META: Record<
   "repeated-reading": { label: "Repeated Reading", icon: "Repeat", severity: "medium", color: "#fbbf24" },
   "missing-photo": { label: "Missing Photo", icon: "ImageOff", severity: "low", color: "#94a3b8" },
   "rejected-entry": { label: "Rejected Entry", icon: "XCircle", severity: "high", color: "#f87171" },
+  "time-tamper": { label: "Clock Tampering", icon: "AlarmClock", severity: "high", color: "#ef4444" },
 };
 
 export const SEVERITY_COLOR: Record<AlertSeverity, string> = {

@@ -110,6 +110,7 @@ interface DataState {
   submitReading: (input: ReadingInput) => { reading: FlowMeterReading; alerts: AlertType[] };
   submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry; alerts: AlertType[] };
   raiseEtpInletAlert: (industryId: string, etpInlet: number) => void;
+  raiseTamperAlert: (industryId: string, clientISO: string, serverISO: string, driftMinutes: number) => void;
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
   acknowledgeAlert: (id: string) => void;
@@ -380,6 +381,31 @@ export const useDataStore = create<DataState>()(
           industries: s.industries.map((i) =>
             i.id === industryId ? { ...i, alertsCount: i.alertsCount + 1 } : i,
           ),
+        }));
+      },
+
+      // Fired from the ETP entry form when the device clock disagrees with trusted
+      // server time — a possible attempt to back/forward-date an entry. Raises a
+      // descriptive time-tamper alert to the Monitoring Body.
+      raiseTamperAlert: (industryId, clientISO, serverISO, driftMinutes) => {
+        const ind = get().industries.find((i) => i.id === industryId);
+        const createdAt = nowISO();
+        const alert: Alert = {
+          id: `AL-${Date.now().toString(36)}-TAMPER`,
+          type: "time-tamper",
+          severity: ALERT_META["time-tamper"].severity,
+          industryId,
+          industryName: ind?.name ?? null,
+          cetpId: null,
+          title: ALERT_META["time-tamper"].label,
+          message: `Possible date/time tampering by ${ind?.name ?? "unit"}: the device clock (${clientISO}) differs from trusted server time (${serverISO}) by ~${driftMinutes} min at submission.`,
+          createdAt,
+          status: "active",
+          relatedReadingId: null,
+        };
+        set((s) => ({
+          alerts: [alert, ...s.alerts],
+          industries: s.industries.map((i) => (i.id === industryId ? { ...i, alertsCount: i.alertsCount + 1 } : i)),
         }));
       },
 

@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/lib/store/auth";
 import { useDataStore, latestEntryFor, cumulativeDispatch } from "@/lib/store/data";
+import { getServerTime } from "@/lib/data/server-time";
 import type { AlertType } from "@/lib/types";
 import { ALERT_META, WATER_METERS, ENERGY_METERS, SLUDGE_WARN_RATIO } from "@/lib/constants";
 import { formatNumber, formatDate } from "@/lib/utils";
@@ -44,9 +45,11 @@ const emptyLedger = (): LedgerState => ({ opening: 0, generation: "", dateOfDisp
 
 export default function EtpEntryPage() {
   const industryId = useAuthStore((s) => s.industryId);
+  const uid = useAuthStore((s) => s.uid);
   const industries = useDataStore((s) => s.industries);
   const etpEntries = useDataStore((s) => s.etpEntries);
   const submitEtpEntry = useDataStore((s) => s.submitEtpEntry);
+  const raiseTamperAlert = useDataStore((s) => s.raiseTamperAlert);
   const industry = industries.find((i) => i.id === industryId);
 
   const [today, setToday] = useState("");
@@ -137,6 +140,25 @@ export default function EtpEntryPage() {
       description: `Total intake ${formatNumber(entry.totalWaterIntake)} m³ · sent for verification${alerts.length ? ` · ${alerts.length} alert(s)` : ""}.`,
     });
     setSuccess({ total: entry.totalWaterIntake, alerts });
+
+    // Best-effort clock-tamper check against trusted server time.
+    if (uid) void verifyClock(uid, industryId);
+  };
+
+  // Compares the device clock with trusted Firestore server time; a large gap
+  // means the operator may have altered their system date/time, so alert the
+  // Monitoring Body with a description. Silent if server time is unavailable.
+  const verifyClock = async (userId: string, indId: string) => {
+    const clientMs = Date.now();
+    const serverMs = await getServerTime(userId);
+    if (serverMs == null) return;
+    const driftMs = Math.abs(serverMs - clientMs);
+    if (driftMs > 5 * 60 * 1000) {
+      raiseTamperAlert(indId, new Date(clientMs).toISOString(), new Date(serverMs).toISOString(), Math.round(driftMs / 60000));
+      toast.warning("Clock mismatch detected", {
+        description: "Your device time differs from server time — the Monitoring Body has been notified.",
+      });
+    }
   };
 
   if (!industry) {

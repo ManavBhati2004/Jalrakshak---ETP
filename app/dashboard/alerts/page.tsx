@@ -9,6 +9,7 @@ import { Icon } from "@/components/shared/icon";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
+import { useAuthStore, isAdmin } from "@/lib/store/auth";
 import { ALERT_META, SEVERITY_COLOR } from "@/lib/constants";
 import type { AlertSeverity } from "@/lib/types";
 import { timeAgo, cn } from "@/lib/utils";
@@ -23,10 +24,19 @@ const STATUS_TABS = [
 const SEVERITIES: AlertSeverity[] = ["critical", "high", "medium", "low"];
 
 export default function AlertsPage() {
-  const alerts = useDataStore((s) => s.alerts);
+  const allAlerts = useDataStore((s) => s.alerts);
   const acknowledge = useDataStore((s) => s.acknowledgeAlert);
   const resolve = useDataStore((s) => s.resolveAlert);
+  const role = useAuthStore((s) => s.role);
+  const industryId = useAuthStore((s) => s.industryId);
+  const admin = isAdmin(role);
   const [tab, setTab] = useState<(typeof STATUS_TABS)[number]["key"]>("active");
+
+  // ETP operators see only their own unit's alerts (read-only).
+  const alerts = useMemo(
+    () => (admin ? allAlerts : allAlerts.filter((a) => a.industryId === industryId)),
+    [allAlerts, admin, industryId],
+  );
 
   const sevCounts = useMemo(() => {
     const active = alerts.filter((a) => a.status === "active");
@@ -41,9 +51,13 @@ export default function AlertsPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Governance"
-        title="Alert Center"
-        description="The engine flags late, zero, excess, missing-photo, non-reporting and rejected events the moment they occur."
+        eyebrow={admin ? "Governance" : "ETP · Alerts"}
+        title={admin ? "Alert Center" : "Alerts & Warnings"}
+        description={
+          admin
+            ? "The engine flags late, zero, excess, missing-photo, non-reporting and rejected events the moment they occur."
+            : "Alerts and warnings raised on your ETP water-balance entries."
+        }
       />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -108,7 +122,7 @@ export default function AlertsPage() {
                     <span>· {timeAgo(a.createdAt)}</span>
                   </div>
                 </div>
-                {a.status === "active" && (
+                {admin && a.status === "active" && (
                   <div className="flex shrink-0 flex-col gap-1.5 sm:flex-row">
                     <Button size="sm" variant="outline" className="h-8 gap-1 rounded-lg" onClick={() => { acknowledge(a.id); toast("Alert acknowledged"); }}>
                       <Check className="h-3.5 w-3.5" /> Ack
@@ -118,7 +132,7 @@ export default function AlertsPage() {
                     </Button>
                   </div>
                 )}
-                {a.status === "acknowledged" && (
+                {admin && a.status === "acknowledged" && (
                   <Button size="sm" className="h-8 shrink-0 gap-1 rounded-lg" onClick={() => { resolve(a.id); toast.success("Alert resolved"); }}>
                     <CircleCheck className="h-3.5 w-3.5" /> Resolve
                   </Button>
