@@ -22,8 +22,7 @@ export default function RegisterMemberPage() {
           <Droplets className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <span>
             Registered as an <span className="font-semibold text-foreground">Individual ETP</span> unit with a{" "}
-            <span className="font-semibold text-amber-500">pending</span> status. The operator can later self-register at{" "}
-            <span className="font-mono text-xs">/register</span> to claim their own login.
+            <span className="font-semibold text-amber-500">pending</span> status.
           </span>
         </div>
         <RegistrationForm mode="admin" />

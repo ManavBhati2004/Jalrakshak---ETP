@@ -62,14 +62,6 @@ export function Topbar() {
       {admin ? <AdminSearch /> : <div className="hidden flex-1 md:block" />}
 
       <div className="flex flex-1 items-center justify-end gap-1.5">
-        <span className="mr-1 hidden items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-600 sm:inline-flex">
-          <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
-            <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-          </span>
-          Live · 24×7
-        </span>
-
         <Button asChild variant="ghost" size="icon" className="relative">
           <Link href="/dashboard/alerts" aria-label="Alerts">
             <Bell className="h-5 w-5" />

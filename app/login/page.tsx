@@ -103,17 +103,6 @@ export default function LoginPage() {
             <JalRakshakLogo size={36} />
           </div>
 
-          {/* tabs: Sign in (active) · Register Unit -> full /register form */}
-          <div className="mt-4 inline-flex self-start rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
-            <span className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-semibold text-white shadow">Sign in</span>
-            <Link
-              href="/register"
-              className="rounded-lg px-4 py-1.5 text-sm font-semibold text-slate-500 transition-colors hover:text-slate-700"
-            >
-              Register Unit
-            </Link>
-          </div>
-
           <h2 className="mt-4 font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Welcome back</h2>
           <p className="mt-1.5 text-sm text-slate-500">Sign in to your monitoring or textile-unit account.</p>
 
@@ -153,12 +142,6 @@ export default function LoginPage() {
               <span className="font-semibold text-slate-600">ETP Unit</span> — <span className="text-slate-400">Email:</span> etp@demo.in · <span className="text-slate-400">Password:</span> demo123
             </p>
           </div>
-          <p className="mt-3 text-center text-sm text-slate-500">
-            New here?{" "}
-            <Link href="/register" className="font-semibold text-indigo-600 hover:underline">
-              Register a unit
-            </Link>
-          </p>
         </div>
       </div>
     </div>
