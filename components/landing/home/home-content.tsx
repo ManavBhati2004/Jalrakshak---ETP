@@ -1,14 +1,14 @@
 "use client";
 
 import { HeroSection } from "./hero-section";
-import { AboutSlideshow } from "./about-slideshow";
+import { ProductWalkthrough } from "./product-walkthrough";
 import { ContactSection } from "./contact-section";
 
 export function HomeContent() {
   return (
     <div className="relative bg-background">
       <HeroSection />
-      <AboutSlideshow />
+      <ProductWalkthrough />
       <ContactSection />
     </div>
   );
