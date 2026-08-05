@@ -11,8 +11,11 @@ import type {
   TrendPoint,
   ReadingShift,
   EtpEntry,
+  MeterReading,
+  HwLedger,
 } from "@/lib/types";
-import { complianceStatus, ALERT_META } from "@/lib/constants";
+import { complianceStatus, ALERT_META, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
+import { computeGrandTotal } from "@/lib/data/etp-calc";
 
 export const industries = industriesRaw as Industry[];
 
@@ -268,32 +271,121 @@ export function buildEtpEntries(): EtpEntry[] {
   const etpUnits = industries.filter((i) => i.isIndividualETP);
   for (const ind of etpUnits) {
     const rnd = mulberry32(hashStr(ind.id + "etp"));
+    // Cumulative meter readings + running ledger balances, carried forward day to day
+    // (Initial = prior Final; Opening = prior Closing).
+    const waterCum: Record<string, number> = {};
+    const energyCum: Record<string, number> = {};
+    for (const m of WATER_METERS) waterCum[m.key] = Math.round(ind.permittedKLD * (50 + rnd() * 50));
+    for (const m of ENERGY_METERS) energyCum[m.key] = Math.round(ind.permittedKLD * (200 + rnd() * 100));
+    let sludgeBal = Math.round(ind.permittedKLD * (20 + rnd() * 20)); // kg opening
+    let saltBal = Math.round(ind.permittedKLD * (5 + rnd() * 10)); // kg opening
+
     for (let d = 3; d >= 1; d--) {
+      // daily water volumes (M3)
       const fresh = Math.round(ind.permittedKLD * (0.7 + rnd() * 0.25));
-      const etpInlet = Math.round(ind.permittedKLD * (0.85 + rnd() * 0.15));
-      const etpOutlet = Math.round(etpInlet * (0.88 + rnd() * 0.07));
-      const etpReuse = Math.round(etpOutlet * (0.18 + rnd() * 0.1));
-      const roInlet = Math.round(etpOutlet * (0.78 + rnd() * 0.1));
-      const roPermeate = Math.round(roInlet * (0.62 + rnd() * 0.08));
-      const roReject = Math.max(0, roInlet - roPermeate);
-      const sludgeToTSDF = Math.round(ind.permittedKLD * (0.02 + rnd() * 0.03));
+      const etpInletV = Math.round(ind.permittedKLD * (0.85 + rnd() * 0.15));
+      const etpReuseV = Math.round(etpInletV * (0.15 + rnd() * 0.1));
+      const tertiaryV = Math.round(etpInletV * (0.25 + rnd() * 0.1));
+      const roFeedV = Math.round(etpInletV * (0.7 + rnd() * 0.1));
+      const roPermeateV = Math.round(roFeedV * (0.62 + rnd() * 0.08));
+      const roRejectV = Math.max(0, roFeedV - roPermeateV);
+      const meeFeedV = Math.round(roRejectV * (0.6 + rnd() * 0.2));
+      const meeCondensateV = Math.round(meeFeedV * (0.7 + rnd() * 0.1));
+      const meeRejectV = Math.max(0, meeFeedV - meeCondensateV);
+      const dailyWater: Record<string, number> = {
+        freshWaterConsumption: fresh,
+        etpInlet: etpInletV,
+        etpReuse: etpReuseV,
+        tertiaryTreated: tertiaryV,
+        roInlet: roFeedV,
+        roPermeate: roPermeateV,
+        roReject: roRejectV,
+        meeFeed: meeFeedV,
+        meeCondensate: meeCondensateV,
+        meeReject: meeRejectV,
+      };
+      const water: Record<string, MeterReading> = {};
+      for (const m of WATER_METERS) {
+        const initial = waterCum[m.key];
+        const total = dailyWater[m.key] ?? 0;
+        const final = initial + total;
+        water[m.key] = { initial, final, total };
+        waterCum[m.key] = final;
+      }
+      const waterGrandTotal = computeGrandTotal(water);
+
+      // daily energy (kWh)
+      const dailyEnergy: Record<string, number> = {
+        etpInletEnergy: Math.round(ind.permittedKLD * (2 + rnd() * 1)),
+        roRejectEnergy: Math.round(ind.permittedKLD * (1 + rnd() * 0.5)),
+        meeRejectEnergy: Math.round(ind.permittedKLD * (3 + rnd() * 1)),
+      };
+      const energy: Record<string, MeterReading> = {};
+      for (const m of ENERGY_METERS) {
+        const initial = energyCum[m.key];
+        const total = dailyEnergy[m.key] ?? 0;
+        const final = initial + total;
+        energy[m.key] = { initial, final, total };
+        energyCum[m.key] = final;
+      }
+
+      // ETP sludge ledger (kg) — dispatch on the middle day
+      const sludgeGen = Math.round(ind.permittedKLD * (1.5 + rnd() * 1));
+      const sludgeDispatch = d === 2 ? Math.round(sludgeBal * 0.5) : 0;
+      const sludge: HwLedger = {
+        opening: sludgeBal,
+        generation: sludgeGen,
+        dateOfDisposal: sludgeDispatch > 0 ? dayISO(d).slice(0, 10) : "",
+        dispatch: sludgeDispatch,
+        manifestNo: sludgeDispatch > 0 ? `MF-${ind.id}-${d}` : "",
+        closing: sludgeBal + sludgeGen - sludgeDispatch,
+        remark: "",
+      };
+      sludgeBal = sludge.closing;
+
+      // MEE salt ledger (kg)
+      const saltGen = Math.round(ind.permittedKLD * (0.5 + rnd() * 0.5));
+      const salt: HwLedger = {
+        opening: saltBal,
+        generation: saltGen,
+        dateOfDisposal: "",
+        dispatch: 0,
+        manifestNo: "",
+        closing: saltBal + saltGen,
+        remark: "",
+      };
+      saltBal = salt.closing;
+
+      // legacy scalars derived from the water-meter totals (kept for existing dashboards)
+      const freshWaterConsumption = water.freshWaterConsumption.total;
+      const etpReuse = water.etpReuse.total;
+      const roPermeate = water.roPermeate.total;
+      const totalWaterIntake = freshWaterConsumption + etpReuse + roPermeate;
+
       entries.push({
         id: `E-${String(++n).padStart(4, "0")}`,
         industryId: ind.id,
         industryName: ind.name,
         date: dayISO(d).slice(0, 10),
-        freshWaterConsumption: fresh,
-        etpInlet,
-        etpOutlet,
+        freshWaterConsumption,
+        etpInlet: water.etpInlet.total,
+        etpOutlet: 0, // legacy field — no prescribed meter maps to it
         etpReuse,
-        roInlet,
-        roReject,
+        roInlet: water.roInlet.total,
+        roReject: water.roReject.total,
         roPermeate,
-        sludgeToTSDF,
-        totalWaterIntake: fresh + etpReuse + roPermeate,
+        sludgeToTSDF: 0, // legacy KL field — replaced by the kg sludge ledger
+        totalWaterIntake,
         unit: "KL",
         status: d === 1 ? "pending" : "approved",
         submittedAt: dayISO(d, "09:00"),
+        water,
+        waterGrandTotal,
+        waterRemark: "",
+        energy,
+        energyRemark: "",
+        sludge,
+        salt,
       });
     }
   }

@@ -332,3 +332,71 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- Regulator print sheets (RSPCB prescribed return) ----
+   The EtpPrintSheets component is hidden on screen (Tailwind `hidden print:block`)
+   and revealed only when printing; everything else is hidden so the browser's
+   Print → "Save as PDF" produces clean one-sheet-per-page output. */
+@media print {
+  @page {
+    margin: 12mm;
+  }
+  body * {
+    visibility: hidden !important;
+  }
+  .etp-print,
+  .etp-print * {
+    visibility: visible !important;
+  }
+  .etp-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    color: #000;
+    background: #fff;
+  }
+  .etp-print .ps-sheet {
+    break-after: page;
+    padding: 8px 4px 24px;
+  }
+  .etp-print .ps-sheet:last-child {
+    break-after: auto;
+  }
+  .etp-print h2 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 0 0 6px;
+  }
+  .etp-print h3 {
+    font-size: 13px;
+    font-weight: 700;
+    margin: 14px 0 4px;
+  }
+  .etp-print .ps-meta {
+    font-size: 11px;
+    line-height: 1.4;
+    margin-bottom: 8px;
+  }
+  .etp-print .ps-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+  }
+  .etp-print .ps-table th,
+  .etp-print .ps-table td {
+    border: 1px solid #333;
+    padding: 5px 7px;
+    font-size: 11px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .etp-print .ps-table th {
+    background: #f0f0f0;
+    font-weight: 700;
+  }
+  .etp-print .ps-remark {
+    font-size: 12px;
+    margin-top: 8px;
+  }
+}

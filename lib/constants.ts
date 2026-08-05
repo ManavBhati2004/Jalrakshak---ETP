@@ -91,6 +91,52 @@ export const READING_TIMES = [
   { value: "20:00", label: "08:00 PM (Evening)", shift: "evening" as const },
 ];
 
+/* ---------------- RSPCB prescribed-return daily meters (Fateh spec §5–§6) ----------------
+   Labels are reproduced VERBATIM from the prescribed sheet. Keys reuse the existing
+   scalar identifiers for the 6 existing streams (meters 1,2,3,5,6,7); meters 4,8,9,10
+   are new. Water unit M3, energy unit kWh. */
+export const WATER_METERS = [
+  { key: "freshWaterConsumption", label: "Raw Fresh Water / Fresh Water Input", existing: true },
+  { key: "etpInlet", label: "ETP inlet Section-Total of all stream", existing: true },
+  { key: "etpReuse", label: "ETP Treated directly Reuse", existing: true },
+  { key: "tertiaryTreated", label: "Tertiary Treated Section-Total", existing: false },
+  { key: "roInlet", label: "RO Section Total Feed", existing: true },
+  { key: "roPermeate", label: "Total RO permeate Common Meter", existing: true },
+  { key: "roReject", label: "RO Reject Section-Total", existing: true },
+  { key: "meeFeed", label: "MEE Feed Section Total", existing: false },
+  { key: "meeCondensate", label: "Total MEE Condensate / MEE Condensate Reuse", existing: false },
+  { key: "meeReject", label: "MEE Reject Section Total", existing: false },
+] as const;
+
+export const ENERGY_METERS = [
+  { key: "etpInletEnergy", label: "ETP inlet Section-Total of all stream" },
+  { key: "roRejectEnergy", label: "RO Reject Section-Total" },
+  { key: "meeRejectEnergy", label: "MEE Reject Section Total" },
+] as const;
+
+export type WaterMeterKey = (typeof WATER_METERS)[number]["key"];
+export type EnergyMeterKey = (typeof ENERGY_METERS)[number]["key"];
+
+/** Keys mapping to legacy EtpEntry scalar fields (derived from these meter totals). */
+export const WATER_LEGACY_KEYS = ["freshWaterConsumption", "etpInlet", "etpReuse", "roInlet", "roPermeate", "roReject"] as const;
+
+/**
+ * Non-blocking warning fires once cumulative dispatch reaches this fraction of the
+ * registered Authorised quantity (kg). The Fateh brief says "approaches" without a
+ * number — 80% is a documented default; change here to adjust globally.
+ */
+export const AUTHORISED_QUANTITY_WARNING_PERCENT = 80;
+
+/**
+ * How the 10 water meters split across the two regulator print sheets. The brief
+ * requires two sheets but doesn't define the split — meters 1–5 / 6–10 is a
+ * documented default (0-indexed slice bounds).
+ */
+export const WATER_SHEET_GROUPS: [number, number][] = [
+  [0, 5], // Water Sheet 1: meters 1–5
+  [5, 10], // Water Sheet 2: meters 6–10
+];
+
 /* ---------------- Alert metadata ---------------- */
 export const ALERT_META: Record<
   AlertType,

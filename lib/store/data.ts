@@ -12,7 +12,9 @@ import type {
   MeterPoint,
   CetpId,
   EtpEntry,
+  MeterReading,
 } from "@/lib/types";
+import { toMeterReading, computeGrandTotal, toLedger, round1 } from "@/lib/data/etp-calc";
 import {
   industries as seedIndustries,
   buildReadings,
@@ -56,19 +58,47 @@ export interface RegisterInput {
   roStage2?: number;
   roStage3?: number;
   roStage4?: number;
+  // RSPCB prescribed-return registration fields (Fateh spec §3, all optional)
+  misId?: string;
+  tehsil?: string;
+  district?: string;
+  consentOrderNo?: string;
+  consentOrderDate?: string;
+  consentValidFrom?: string;
+  consentValidTo?: string;
+  hwmAuthNo?: string;
+  hwmAuthDate?: string;
+  hwmValidFrom?: string;
+  hwmValidTo?: string;
+  authorisedQuantityKg?: number;
+  tsdfName?: string;
+  tsdfAddress?: string;
+  signatoryName?: string;
+  signatoryDesignation?: string;
 }
 
+export interface MeterInput {
+  initial: number;
+  final: number;
+}
+export interface LedgerInput {
+  opening: number;
+  generation: number;
+  dateOfDisposal: string;
+  dispatch: number;
+  manifestNo: string;
+  remark: string;
+}
+/** Structured RSPCB prescribed-return daily input (water 10 meters, energy 3, 2 kg ledgers). */
 export interface EtpEntryInput {
   industryId: string;
   date: string;
-  freshWaterConsumption: number;
-  etpInlet: number;
-  etpOutlet: number;
-  etpReuse: number;
-  roInlet: number;
-  roReject: number;
-  roPermeate: number;
-  sludgeToTSDF: number;
+  water: Record<string, MeterInput>;
+  waterRemark: string;
+  energy: Record<string, MeterInput>;
+  energyRemark: string;
+  sludge: LedgerInput;
+  salt: LedgerInput;
 }
 
 interface DataState {
@@ -214,27 +244,52 @@ export const useDataStore = create<DataState>()(
 
       submitEtpEntry: (input) => {
         const ind = get().industries.find((i) => i.id === input.industryId);
-        const totalWaterIntake = input.freshWaterConsumption + input.etpReuse + input.roPermeate;
         const id = `E-${Date.now().toString(36).toUpperCase()}`;
         const submittedAt = nowISO();
+
+        // Build the structured prescribed-return readings.
+        const water: Record<string, MeterReading> = {};
+        for (const k of Object.keys(input.water)) water[k] = toMeterReading(input.water[k].initial, input.water[k].final);
+        const energy: Record<string, MeterReading> = {};
+        for (const k of Object.keys(input.energy)) energy[k] = toMeterReading(input.energy[k].initial, input.energy[k].final);
+        const waterGrandTotal = computeGrandTotal(water);
+        const sludge = toLedger(input.sludge);
+        const salt = toLedger(input.salt);
+
+        // Derive the legacy scalar water-balance from the water-meter totals so every
+        // existing dashboard / CSV keeps working unchanged.
+        const freshWaterConsumption = water.freshWaterConsumption?.total ?? 0;
+        const etpInlet = water.etpInlet?.total ?? 0;
+        const etpReuse = water.etpReuse?.total ?? 0;
+        const roInlet = water.roInlet?.total ?? 0;
+        const roReject = water.roReject?.total ?? 0;
+        const roPermeate = water.roPermeate?.total ?? 0;
+        const totalWaterIntake = round1(freshWaterConsumption + etpReuse + roPermeate);
 
         const entry: EtpEntry = {
           id,
           industryId: input.industryId,
           industryName: ind?.name ?? "Unknown",
           date: input.date,
-          freshWaterConsumption: input.freshWaterConsumption,
-          etpInlet: input.etpInlet,
-          etpOutlet: input.etpOutlet,
-          etpReuse: input.etpReuse,
-          roInlet: input.roInlet,
-          roReject: input.roReject,
-          roPermeate: input.roPermeate,
-          sludgeToTSDF: input.sludgeToTSDF,
+          freshWaterConsumption,
+          etpInlet,
+          etpOutlet: 0, // legacy field — no prescribed meter maps to it
+          etpReuse,
+          roInlet,
+          roReject,
+          roPermeate,
+          sludgeToTSDF: 0, // legacy KL field — replaced by the kg sludge ledger
           totalWaterIntake,
           unit: "KL",
           status: "pending",
           submittedAt,
+          water,
+          waterGrandTotal,
+          waterRemark: input.waterRemark,
+          energy,
+          energyRemark: input.energyRemark,
+          sludge,
+          salt,
         };
 
         const fired: AlertType[] = [];
@@ -433,6 +488,22 @@ export const useDataStore = create<DataState>()(
           roStage2: input.roStage2,
           roStage3: input.roStage3,
           roStage4: input.roStage4,
+          misId: input.misId,
+          tehsil: input.tehsil,
+          district: input.district,
+          consentOrderNo: input.consentOrderNo,
+          consentOrderDate: input.consentOrderDate,
+          consentValidFrom: input.consentValidFrom,
+          consentValidTo: input.consentValidTo,
+          hwmAuthNo: input.hwmAuthNo,
+          hwmAuthDate: input.hwmAuthDate,
+          hwmValidFrom: input.hwmValidFrom,
+          hwmValidTo: input.hwmValidTo,
+          authorisedQuantityKg: input.authorisedQuantityKg,
+          tsdfName: input.tsdfName,
+          tsdfAddress: input.tsdfAddress,
+          signatoryName: input.signatoryName,
+          signatoryDesignation: input.signatoryDesignation,
           lastReadingAt: null,
           alertsCount: 0,
           registeredAt: new Date().toISOString(),
@@ -465,13 +536,13 @@ export const useDataStore = create<DataState>()(
     }),
     {
       name: "jalrakshak-data",
-      version: 6,
+      version: 7,
       skipHydration: true,
       storage: createJSONStorage(() => firestoreStorage),
-      // The ETP data model reverted from the RSPCB prescribed-return shape (v5) back
-      // to the flat water-balance figures. Reset anything older than v6 to the
-      // current seed so no stale/mixed EtpEntry shape survives.
-      migrate: (persisted, version) => (version < 6 ? seed() : persisted) as DataState,
+      // v7 ADDITIVELY layers the RSPCB prescribed-return structures (10 water + 3 energy
+      // meters, kg sludge/salt ledgers) onto the retained legacy scalar shape. Reseed
+      // anything older than v7 so the demo data carries the new structures.
+      migrate: (persisted, version) => (version < 7 ? seed() : persisted) as DataState,
     },
   ),
 );

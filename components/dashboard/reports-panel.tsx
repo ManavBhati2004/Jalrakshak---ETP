@@ -45,7 +45,7 @@ export function ReportsPanel() {
     { key: "pending", title: "Pending", desc: "Awaiting review", icon: Clock, color: "#f59e0b", count: approvals.filter((a) => a.stage === "submitted" || a.stage === "verification").length, build: () => approvals.filter((a) => a.stage === "submitted" || a.stage === "verification").map(({ timeline, alerts, ...rest }) => rest) },
     { key: "rejected", title: "Rejected", desc: "Rejected log", icon: XCircle, color: "#ef4444", count: approvals.filter((a) => a.stage === "rejected").length, build: () => approvals.filter((a) => a.stage === "rejected").map(({ timeline, alerts, ...rest }) => rest) },
     { key: "nonreporting", title: "Non-Reporting", desc: "Silent units", icon: WifiOff, color: "#fb923c", count: industries.filter((i) => i.status === "non-reporting").length, build: () => industries.filter((i) => i.status === "non-reporting") },
-    { key: "etp", title: "ETP Entries", desc: "Water-balance log", icon: Droplets, color: "#0d9488", count: etpEntries.length, build: () => etpEntries },
+    { key: "etp", title: "ETP Entries", desc: "Water-balance log", icon: Droplets, color: "#0d9488", count: etpEntries.length, build: () => etpEntries.map(({ water, energy, sludge, salt, ...rest }) => rest) },
   ];
 
   const handleExport = (r: (typeof REPORTS)[number]) => {
