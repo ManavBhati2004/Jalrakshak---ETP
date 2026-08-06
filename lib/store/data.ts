@@ -7,6 +7,7 @@ import type {
   Approval,
   Alert,
   AlertType,
+  AlertSeverity,
   ComplianceRecord,
   ApprovalStage,
   MeterPoint,
@@ -112,6 +113,8 @@ interface DataState {
   submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry; alerts: AlertType[] };
   raiseEtpInletAlert: (industryId: string, etpInlet: number) => void;
   raiseTamperAlert: (industryId: string, clientISO: string, serverISO: string, driftMinutes: number) => void;
+  reportIssue: (industryId: string, category: string, message: string) => void;
+  sendDisciplinaryAlert: (industryId: string, message: string, severity: AlertSeverity) => void;
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
   acknowledgeAlert: (id: string) => void;
@@ -389,6 +392,56 @@ export const useDataStore = create<DataState>()(
           cetpId: null,
           title: ALERT_META["time-tamper"].label,
           message: `Possible date/time tampering by ${ind?.name ?? "unit"}: the device clock (${clientISO}) differs from trusted server time (${serverISO}) by ~${driftMinutes} min at submission.`,
+          createdAt,
+          status: "active",
+          relatedReadingId: null,
+        };
+        set((s) => ({
+          alerts: [alert, ...s.alerts],
+          industries: s.industries.map((i) => (i.id === industryId ? { ...i, alertsCount: i.alertsCount + 1 } : i)),
+        }));
+      },
+
+      // ETP → Monitoring Body: an operator reports an issue from the Help Center.
+      // The alert is written into the operator's OWN slice; the admin (who reads
+      // every slice) sees it in the Alert Center.
+      reportIssue: (industryId, category, message) => {
+        const ind = get().industries.find((i) => i.id === industryId);
+        const createdAt = nowISO();
+        const alert: Alert = {
+          id: `AL-${Date.now().toString(36)}-HELP`,
+          type: "help-request",
+          severity: ALERT_META["help-request"].severity,
+          industryId,
+          industryName: ind?.name ?? null,
+          cetpId: null,
+          title: `Help request · ${category}`,
+          message,
+          createdAt,
+          status: "active",
+          relatedReadingId: null,
+        };
+        set((s) => ({
+          alerts: [alert, ...s.alerts],
+          industries: s.industries.map((i) => (i.id === industryId ? { ...i, alertsCount: i.alertsCount + 1 } : i)),
+        }));
+      },
+
+      // Monitoring Body → an ETP: a disciplinary / advisory notice. Written into the
+      // TARGET unit's slice (the admin may write any slice), so the operator sees it
+      // live in their own Alerts.
+      sendDisciplinaryAlert: (industryId, message, severity) => {
+        const ind = get().industries.find((i) => i.id === industryId);
+        const createdAt = nowISO();
+        const alert: Alert = {
+          id: `AL-${Date.now().toString(36)}-NOTICE`,
+          type: "disciplinary",
+          severity,
+          industryId,
+          industryName: ind?.name ?? null,
+          cetpId: null,
+          title: "Notice from Monitoring Body",
+          message,
           createdAt,
           status: "active",
           relatedReadingId: null,

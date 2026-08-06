@@ -106,32 +106,39 @@ export default function LoginPage() {
           <h2 className="mt-4 font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Welcome back</h2>
           <p className="mt-1.5 text-sm text-slate-500">Sign in to your monitoring or textile-unit account.</p>
 
-          {/* credentials */}
-          <div className="mt-6 space-y-4">
-            <LField label="Email" icon={<Mail className="h-4 w-4" />}>
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" className={inputCls} placeholder="you@unit.in" autoComplete="email" />
-            </LField>
-            <LField label="Password" icon={<KeyRound className="h-4 w-4" />}>
-              <div className="relative">
-                <input value={password} onChange={(e) => setPassword(e.target.value)} type={showPw ? "text" : "password"} className={inputCls + " pr-10"} placeholder="••••••••" autoComplete="current-password" />
-                <button type="button" tabIndex={-1} onClick={() => setShowPw((s) => !s)} className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600" aria-label={showPw ? "Hide password" : "Show password"}>
-                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-            </LField>
-          </div>
-
-          {error && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-600">{error}</p>}
-
-          <Button
-            onClick={signIn}
-            disabled={entering}
-            size="lg"
-            className="mt-6 h-12 w-full gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-base font-semibold text-white hover:from-indigo-600/90 hover:to-violet-600/90"
+          {/* credentials — wrapped in a form so Enter submits */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              signIn();
+            }}
           >
-            {entering ? "Entering…" : "Sign In"}
-            {!entering && <ArrowRight className="h-4 w-4" />}
-          </Button>
+            <div className="mt-6 space-y-4">
+              <LField label="Email" icon={<Mail className="h-4 w-4" />}>
+                <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" className={inputCls} placeholder="you@unit.in" autoComplete="email" />
+              </LField>
+              <LField label="Password" icon={<KeyRound className="h-4 w-4" />}>
+                <div className="relative">
+                  <input value={password} onChange={(e) => setPassword(e.target.value)} type={showPw ? "text" : "password"} className={inputCls + " pr-10"} placeholder="••••••••" autoComplete="current-password" />
+                  <button type="button" tabIndex={-1} onClick={() => setShowPw((s) => !s)} className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600" aria-label={showPw ? "Hide password" : "Show password"}>
+                    {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </LField>
+            </div>
+
+            {error && <p className="mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-600">{error}</p>}
+
+            <Button
+              type="submit"
+              disabled={entering}
+              size="lg"
+              className="mt-6 h-12 w-full gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 text-base font-semibold text-white hover:from-indigo-600/90 hover:to-violet-600/90"
+            >
+              {entering ? "Entering…" : "Sign In"}
+              {!entering && <ArrowRight className="h-4 w-4" />}
+            </Button>
+          </form>
 
           <div className="mt-4 space-y-1.5 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
             <p className="font-semibold text-slate-700">Sign-in accounts</p>

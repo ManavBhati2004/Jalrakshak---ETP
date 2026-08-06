@@ -17,7 +17,7 @@ export default function RegisterMemberPage() {
         description="Onboard a textile unit running its own individual ETP. Submission enters the verification queue."
       />
 
-      <div className="max-w-3xl">
+      <div className="mx-auto max-w-3xl">
         <div className="mb-4 flex items-start gap-2 rounded-xl border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
           <Droplets className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <span>

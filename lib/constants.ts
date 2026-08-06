@@ -45,6 +45,7 @@ export const DASHBOARD_NAV: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: "LayoutDashboard", group: "Overview", roles: ALL },
   { label: "ETP Data Entry", href: "/dashboard/etp-entry", icon: "ClipboardCheck", group: "Overview", roles: ETP },
   { label: "Alerts", href: "/dashboard/alerts", icon: "BellRing", group: "Overview", roles: ETP },
+  { label: "Help Center", href: "/dashboard/help", icon: "LifeBuoy", group: "Overview", roles: ETP },
   { label: "Industries", href: "/dashboard/industries", icon: "Factory", group: "Monitoring", roles: ADMIN },
   { label: "ETP Units", href: "/dashboard/etp", icon: "Droplets", group: "Monitoring", roles: ADMIN },
   { label: "Approvals", href: "/dashboard/approvals", icon: "CheckCircle2", group: "Governance", roles: ADMIN },
@@ -61,7 +62,7 @@ export const ADMIN_ONLY_PATHS = [
   "/dashboard/compliance",
   "/dashboard/reports",
 ];
-export const ETP_ONLY_PATHS = ["/dashboard/etp-entry"];
+export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help"];
 
 /** Whether a role may visit a dashboard path (used for redirect gating). */
 export function canAccessPath(role: RoleId, pathname: string): boolean {
@@ -152,6 +153,8 @@ export const ALERT_META: Record<
   "missing-photo": { label: "Missing Photo", icon: "ImageOff", severity: "low", color: "#94a3b8" },
   "rejected-entry": { label: "Rejected Entry", icon: "XCircle", severity: "high", color: "#f87171" },
   "time-tamper": { label: "Clock Tampering", icon: "AlarmClock", severity: "high", color: "#ef4444" },
+  "help-request": { label: "Help Request", icon: "LifeBuoy", severity: "medium", color: "#0ea5e9" },
+  "disciplinary": { label: "Notice", icon: "Megaphone", severity: "high", color: "#ef4444" },
 };
 
 export const SEVERITY_COLOR: Record<AlertSeverity, string> = {

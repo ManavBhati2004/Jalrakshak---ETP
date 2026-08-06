@@ -26,6 +26,9 @@ import {
   ImageOff,
   XCircle,
   AlarmClock,
+  LifeBuoy,
+  Megaphone,
+  Send,
   Circle,
   type LucideIcon,
 } from "lucide-react";
@@ -56,6 +59,9 @@ const REGISTRY: Record<string, LucideIcon> = {
   ImageOff,
   XCircle,
   AlarmClock,
+  LifeBuoy,
+  Megaphone,
+  Send,
 };
 
 export function Icon({

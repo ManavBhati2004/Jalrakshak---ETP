@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { BellRing, Check, CircleCheck } from "lucide-react";
+import { BellRing, Check, CircleCheck, Megaphone, Send } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Icon } from "@/components/shared/icon";
@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
 import { useAuthStore, isAdmin } from "@/lib/store/auth";
 import { ALERT_META, SEVERITY_COLOR } from "@/lib/constants";
-import type { AlertSeverity } from "@/lib/types";
+import type { AlertSeverity, Industry } from "@/lib/types";
 import { timeAgo, cn } from "@/lib/utils";
 
 const STATUS_TABS = [
@@ -25,8 +25,10 @@ const SEVERITIES: AlertSeverity[] = ["critical", "high", "medium", "low"];
 
 export default function AlertsPage() {
   const allAlerts = useDataStore((s) => s.alerts);
+  const industries = useDataStore((s) => s.industries);
   const acknowledge = useDataStore((s) => s.acknowledgeAlert);
   const resolve = useDataStore((s) => s.resolveAlert);
+  const sendDisciplinaryAlert = useDataStore((s) => s.sendDisciplinaryAlert);
   const role = useAuthStore((s) => s.role);
   const industryId = useAuthStore((s) => s.industryId);
   const admin = isAdmin(role);
@@ -56,9 +58,11 @@ export default function AlertsPage() {
         description={
           admin
             ? "The engine flags late, zero, excess, missing-photo, non-reporting and rejected events the moment they occur."
-            : "Alerts and warnings raised on your ETP water-balance entries."
+            : "Alerts and warnings raised on your ETP water-balance entries, plus notices from the Monitoring Body."
         }
       />
+
+      {admin && <NoticeComposer industries={industries} onSend={sendDisciplinaryAlert} />}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {SEVERITIES.map((s) => (
@@ -152,3 +156,88 @@ export default function AlertsPage() {
     </div>
   );
 }
+
+/** Admin-only composer to send a disciplinary / advisory notice to a specific ETP unit. */
+function NoticeComposer({
+  industries,
+  onSend,
+}: {
+  industries: Industry[];
+  onSend: (industryId: string, message: string, severity: AlertSeverity) => void;
+}) {
+  const units = industries.filter((i) => i.isIndividualETP);
+  const [open, setOpen] = useState(false);
+  const [target, setTarget] = useState("");
+  const [severity, setSeverity] = useState<AlertSeverity>("high");
+  const [message, setMessage] = useState("");
+
+  const send = () => {
+    if (!target || !message.trim()) return;
+    onSend(target, message.trim(), severity);
+    const name = units.find((u) => u.id === target)?.name ?? "unit";
+    toast.success("Notice sent", { description: `Delivered to ${name}'s Alerts.` });
+    setMessage("");
+    setOpen(false);
+  };
+
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-2 text-left">
+        <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-red-500/10 text-red-500">
+          <Megaphone className="h-5 w-5" />
+        </span>
+        <span className="flex-1">
+          <span className="block text-sm font-bold text-foreground">Send a notice to a unit</span>
+          <span className="block text-xs text-muted-foreground">Deliver a disciplinary or advisory notice to a specific ETP operator.</span>
+        </span>
+        <span className="text-xs font-semibold text-primary">{open ? "Close" : "Compose"}</span>
+      </button>
+
+      {open && (
+        <div className="mt-4 grid gap-3 sm:grid-cols-[1.2fr_0.8fr]">
+          <div className="space-y-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Unit</label>
+              <select value={target} onChange={(e) => setTarget(e.target.value)} className={selectCls}>
+                <option value="">Select a unit…</option>
+                {units.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name} ({u.id})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Message</label>
+              <textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={3}
+                placeholder="e.g. Repeated late submissions — please file the daily entry on time."
+                className="w-full rounded-xl border border-border bg-muted/30 px-3 py-2.5 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:bg-background"
+              />
+            </div>
+          </div>
+          <div className="flex flex-col justify-between gap-3">
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Severity</label>
+              <select value={severity} onChange={(e) => setSeverity(e.target.value as AlertSeverity)} className={selectCls}>
+                {SEVERITIES.map((s) => (
+                  <option key={s} value={s} className="capitalize">
+                    {s}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Button onClick={send} disabled={!target || !message.trim()} className="h-11 w-full gap-2 rounded-xl font-semibold">
+              <Send className="h-4 w-4" /> Send notice
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const selectCls =
+  "h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm outline-none transition-colors focus:border-primary/50 focus:bg-background";
