@@ -59,23 +59,6 @@ export interface Industry {
   roStage2?: number;
   roStage3?: number;
   roStage4?: number;
-  // ---- RSPCB prescribed-return registration fields (Fateh spec §3, all optional/additive) ----
-  misId?: string;
-  tehsil?: string;
-  district?: string;
-  consentOrderNo?: string;
-  consentOrderDate?: string;
-  consentValidFrom?: string;
-  consentValidTo?: string;
-  hwmAuthNo?: string;
-  hwmAuthDate?: string;
-  hwmValidFrom?: string;
-  hwmValidTo?: string;
-  authorisedQuantityKg?: number; // canonical kg (MT converted ×1000 at input)
-  tsdfName?: string;
-  tsdfAddress?: string;
-  signatoryName?: string;
-  signatoryDesignation?: string;
   lastReadingAt: string | null;
   alertsCount: number;
   registeredAt: string;
@@ -95,41 +78,12 @@ export type MeterPoint =
 
 export type ReadingStatus = "pending" | "approved" | "rejected";
 
-/** One meter's daily record (RSPCB prescribed return): Total = Final − Initial (auto). */
-export interface MeterReading {
-  initial: number;
-  final: number;
-  total: number;
-}
-
-/** Day-wise hazardous-waste stock ledger (ETP sludge / MEE salt), all quantities in kg. */
-export interface HwLedger {
-  opening: number; // carried from the previous entry's closing
-  generation: number;
-  dateOfDisposal: string; // "" when nothing dispatched
-  dispatch: number;
-  manifestNo: string;
-  closing: number; // = opening + generation − dispatch (auto)
-  remark: string;
-}
-
-/**
- * Daily entry for an individual ETP unit.
- *
- * The original flat scalar figures (in KL, `totalWaterIntake` etc.) are RETAINED so
- * historical entries and every existing dashboard/CSV keep working unchanged. The
- * RSPCB prescribed-return fields are ADDED as optional structures: 10 water meters +
- * 3 energy meters (each initial/final/total) and two kg ledgers. New entries populate
- * both — the legacy scalars are derived from the water-meter totals. Old entries have
- * only the scalars (the optional fields are absent and read as undefined).
- * Water meters M3, energy kWh, ledgers kg.
- */
+/** Daily water-balance entry for an individual ETP unit. All values in KL. */
 export interface EtpEntry {
   id: string;
   industryId: string;
   industryName: string;
   date: string;
-  // ---- legacy scalar water balance (retained; derived from meter totals on new entries) ----
   freshWaterConsumption: number;
   etpInlet: number;
   etpOutlet: number;
@@ -137,19 +91,11 @@ export interface EtpEntry {
   roInlet: number;
   roReject: number;
   roPermeate: number;
-  sludgeToTSDF: number; // legacy KL field — kept for audit; 0 on prescribed-return entries
+  sludgeToTSDF: number;
   totalWaterIntake: number; // = freshWaterConsumption + etpReuse + roPermeate
   unit: "KL";
   status: ReadingStatus;
   submittedAt: string;
-  // ---- RSPCB prescribed-return structures (optional/additive) ----
-  water?: Record<string, MeterReading>; // 10 water meters (M3), keyed by meter key
-  waterGrandTotal?: number; // auto-sum of the 10 water totals
-  waterRemark?: string;
-  energy?: Record<string, MeterReading>; // 3 energy meters (kWh)
-  energyRemark?: string;
-  sludge?: HwLedger; // ETP sludge (kg)
-  salt?: HwLedger; // ATFD/PAN salt, MEE section (kg)
 }
 
 export type ReadingShift = "morning" | "evening";

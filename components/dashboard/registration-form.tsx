@@ -4,53 +4,30 @@ import { useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Building2, FileText, Trash2, UserCheck, Droplets, Check, Eye, EyeOff, CheckCircle2, Circle } from "lucide-react";
+import { Building2, Droplets, Check, Eye, EyeOff, CheckCircle2, Circle } from "lucide-react";
 import { toast } from "sonner";
 import { doc, setDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
-import { useDataStore, type RegisterInput } from "@/lib/store/data";
+import { useDataStore } from "@/lib/store/data";
 import { useAuthStore } from "@/lib/store/auth";
 import { useAccountsStore } from "@/lib/store/accounts";
 import { remoteApply, emptyData, writeOwnedIndustry, syncContext } from "@/lib/data/firestore-storage";
-import { mtToKg } from "@/lib/data/etp-calc";
 import { cn } from "@/lib/utils";
 
 // Input transforms (applied on every keystroke).
 const alphaOnly = (v: string) => v.replace(/[^A-Za-z ]/g, "");
 const digitsOnly = (v: string) => v.replace(/\D/g, "").slice(0, 10);
 const capFirst = (v: string) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
-const numOnly = (v: string) => v.replace(/[^0-9.]/g, "");
 
 const baseShape = {
-  // Unit details
-  name: z.string().regex(/^[A-Za-z ]{2,}$/, "Name of unit — alphabets only"),
+  name: z.string().regex(/^[A-Za-z ]{2,}$/, "Company name — alphabets only"),
   ownerName: z.string().regex(/^[A-Za-z ]{2,}$/, "Owner name — alphabets only"),
   area: z.string().regex(/^[A-Za-z ]{2,}$/, "Area — alphabets only"),
   address: z.string().min(4, "Address is required"),
-  tehsil: z.string().optional(),
-  district: z.string().optional(),
-  misId: z.string().min(1, "MIS ID is required"),
+  consentNumber: z.string().min(4, "Consent number required"),
   mobile: z.string().regex(/^\d{10}$/, "Enter a 10-digit mobile number"),
   email: z.string().regex(/^\S+@\S+\.\S+$/, "Valid email required"),
-  // Consent details
-  consentNumber: z.string().min(4, "Consent Order No. required"),
-  consentOrderDate: z.string().optional(),
-  consentValidFrom: z.string().optional(),
-  consentValidTo: z.string().optional(),
-  // Hazardous waste details
-  hwmAuthNo: z.string().optional(),
-  hwmAuthDate: z.string().optional(),
-  hwmValidFrom: z.string().optional(),
-  hwmValidTo: z.string().optional(),
-  authQty: z.string().optional(),
-  authQtyUnit: z.enum(["kg", "MT"]).optional(),
-  tsdfName: z.string().optional(),
-  tsdfAddress: z.string().optional(),
-  // Authorised signatory
-  signatoryName: z.string().optional(),
-  signatoryDesignation: z.string().optional(),
-  // Plant capacity (KLD)
   etpCapacity: z.coerce.number().positive("Must be > 0"),
   maxEffluentGeneration: z.coerce.number().positive("Must be > 0"),
   roStage1: z.coerce.number().positive("Must be > 0"),
@@ -60,31 +37,17 @@ const baseShape = {
   meeCapacity: z.coerce.number().positive("Must be > 0"),
 };
 
-// Date-range rules: a validity 'to' must not be earlier than its 'from'.
-const withDateRules = <T extends z.ZodObject<z.ZodRawShape>>(schema: T) =>
-  schema.superRefine((v, ctx) => {
-    const val = v as Record<string, string | undefined>;
-    if (val.consentValidFrom && val.consentValidTo && val.consentValidTo < val.consentValidFrom) {
-      ctx.addIssue({ code: "custom", path: ["consentValidTo"], message: "Validity 'to' cannot be before 'from'" });
-    }
-    if (val.hwmValidFrom && val.hwmValidTo && val.hwmValidTo < val.hwmValidFrom) {
-      ctx.addIssue({ code: "custom", path: ["hwmValidTo"], message: "Validity 'to' cannot be before 'from'" });
-    }
-  });
+const publicSchema = z.object({
+  ...baseShape,
+  password: z
+    .string()
+    .min(8, "At least 8 characters")
+    .regex(/[A-Za-z]/, "Add a letter")
+    .regex(/[0-9]/, "Add a number")
+    .regex(/[^A-Za-z0-9]/, "Add a special character"),
+});
+const adminSchema = z.object(baseShape);
 
-const publicSchema = withDateRules(
-  z.object({
-    ...baseShape,
-    password: z
-      .string()
-      .min(8, "At least 8 characters")
-      .regex(/[A-Za-z]/, "Add a letter")
-      .regex(/[0-9]/, "Add a number")
-      .regex(/[^A-Za-z0-9]/, "Add a special character"),
-  }),
-);
-const adminSchema = withDateRules(z.object(baseShape));
-type BaseValues = z.infer<typeof adminSchema>;
 type FormValues = z.input<typeof publicSchema>;
 
 export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
@@ -103,7 +66,7 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
     handleSubmit,
     watch,
     formState: { errors },
-  } = useForm<FormValues>({ resolver, defaultValues: { authQtyUnit: "kg" } });
+  } = useForm<FormValues>({ resolver });
 
   // Wraps register() so a filtered field transforms its value on every keystroke.
   const filtered = (key: "name" | "ownerName" | "area" | "mobile", transform: (v: string) => string) => {
@@ -125,55 +88,34 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
     { label: "Contains a special character", ok: /[^A-Za-z0-9]/.test(pw) },
   ];
 
-  // Live converted-to-kg preview for the authorised quantity.
-  const authQtyRaw = watch("authQty");
-  const authQtyUnit = (watch("authQtyUnit") as "kg" | "MT") ?? "kg";
-  const authQtyKg = authQtyRaw && Number.isFinite(Number(authQtyRaw)) ? mtToKg(Number(authQtyRaw), authQtyUnit) : null;
-
-  // Maps validated form values → the store's RegisterInput.
-  const toIndustry = (v: BaseValues): RegisterInput => ({
-    name: v.name,
-    ownerName: v.ownerName,
-    area: v.area,
-    address: v.address,
-    mobile: v.mobile,
-    email: v.email,
-    consentNumber: v.consentNumber,
-    permittedKLD: v.maxEffluentGeneration,
-    etpCapacity: v.etpCapacity,
-    roCapacity: v.roStage1,
-    meeCapacity: v.meeCapacity,
-    cetpId: null,
-    maxEffluentGeneration: v.maxEffluentGeneration,
-    roStage1: v.roStage1,
-    roStage2: v.roStage2,
-    roStage3: v.roStage3,
-    roStage4: v.roStage4,
-    misId: v.misId,
-    tehsil: v.tehsil,
-    district: v.district,
-    consentOrderNo: v.consentNumber,
-    consentOrderDate: v.consentOrderDate,
-    consentValidFrom: v.consentValidFrom,
-    consentValidTo: v.consentValidTo,
-    hwmAuthNo: v.hwmAuthNo,
-    hwmAuthDate: v.hwmAuthDate,
-    hwmValidFrom: v.hwmValidFrom,
-    hwmValidTo: v.hwmValidTo,
-    authorisedQuantityKg: v.authQty && Number.isFinite(Number(v.authQty)) ? mtToKg(Number(v.authQty), v.authQtyUnit ?? "kg") : undefined,
-    tsdfName: v.tsdfName,
-    tsdfAddress: v.tsdfAddress,
-    signatoryName: v.signatoryName,
-    signatoryDesignation: v.signatoryDesignation,
-  });
-
   const onSubmit = handleSubmit(async (values) => {
     setSubmitting(true);
 
     // ---- Admin: create the industry record only (no operator login) ----
+    // The Firebase client SDK cannot provision another user's account without
+    // switching the current session, so the admin registers the unit and the
+    // operator later self-registers to claim it.
     if (!isPublic) {
       const v = adminSchema.parse(values);
-      const created = registerIndustry(toIndustry(v));
+      const created = registerIndustry({
+        name: v.name,
+        ownerName: v.ownerName,
+        area: v.area,
+        address: v.address,
+        mobile: v.mobile,
+        email: v.email,
+        consentNumber: v.consentNumber,
+        permittedKLD: v.maxEffluentGeneration,
+        etpCapacity: v.etpCapacity,
+        roCapacity: v.roStage1,
+        meeCapacity: v.meeCapacity,
+        cetpId: null,
+        maxEffluentGeneration: v.maxEffluentGeneration,
+        roStage1: v.roStage1,
+        roStage2: v.roStage2,
+        roStage3: v.roStage3,
+        roStage4: v.roStage4,
+      });
       toast.success("Industry registered", { description: `${created.name} added — pending verification.` });
       setDone(created.name);
       setSubmitting(false);
@@ -182,24 +124,51 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
 
     // ---- Public: full self-registration (account + owned industry) ----
     const v = publicSchema.parse(values);
+    // 1) Create the account first so we're authenticated before touching Firestore
+    //    (the rules require auth to create the industry document).
     const acct = await signup({ name: v.ownerName, email: v.email, password: v.password, role: "etp", industryId: null });
     if (!acct.ok) {
       toast.error("Registration failed", { description: acct.error });
       setSubmitting(false);
       return;
     }
+    // 2) A new operator's world is just its own unit — start from a clean slate so
+    //    we never touch (or read) any other tenant's data.
     remoteApply.active = true;
     try {
       useDataStore.setState(emptyData());
     } finally {
       remoteApply.active = false;
     }
-    const created = registerIndustry(toIndustry(v));
+    // 3) Create the unit locally.
+    const created = registerIndustry({
+      name: v.name,
+      ownerName: v.ownerName,
+      area: v.area,
+      address: v.address,
+      mobile: v.mobile,
+      email: v.email,
+      consentNumber: v.consentNumber,
+      permittedKLD: v.maxEffluentGeneration,
+      etpCapacity: v.etpCapacity,
+      roCapacity: v.roStage1,
+      meeCapacity: v.meeCapacity,
+      cetpId: null,
+      maxEffluentGeneration: v.maxEffluentGeneration,
+      roStage1: v.roStage1,
+      roStage2: v.roStage2,
+      roStage3: v.roStage3,
+      roStage4: v.roStage4,
+    });
+    // 4) Persist the unit as an operator-owned industry document (stamps ownerUid
+    //    so the Firestore rules bind it to this account).
     try {
       await writeOwnedIndustry(useDataStore.getState(), created.id, acct.user.id);
     } catch {
       // best-effort — persistence must not block entering the panel
     }
+    // 5) Link the account → its industry, and point the sync context at it so
+    //    submissions persist immediately.
     try {
       await setDoc(doc(db, "users", acct.user.id), { industryId: created.id }, { merge: true });
     } catch {
@@ -211,6 +180,7 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
     syncContext.ready = true;
     toast.success("ETP unit registered", { description: `${created.name} is now pending verification.` });
     login("etp", created.id);
+    // Hard navigation so the auth listener re-hydrates cleanly from the now-linked profile.
     setTimeout(() => {
       window.location.href = "/dashboard";
     }, 600);
@@ -235,10 +205,13 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
 
   return (
     <form onSubmit={onSubmit} className="space-y-5">
-      {/* Unit details */}
-      <Card title="Unit Details" icon={<Building2 className="h-4 w-4 text-teal-600" />}>
-        <Grid>
-          <Field label="Name of unit" error={errors.name?.message}>
+      {/* general info */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        <h2 className="mb-3 flex items-center gap-2 font-display text-sm font-bold uppercase tracking-wide text-slate-800">
+          <Building2 className="h-4 w-4 text-teal-600" /> Company Details
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Company Name" error={errors.name?.message}>
             <input {...filtered("name", (v) => capFirst(alphaOnly(v)))} className={inputCls} placeholder="e.g. Pali Road Processors" />
           </Field>
           <Field label="Owner Name" error={errors.ownerName?.message}>
@@ -250,14 +223,8 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
           <Field label="Address" error={errors.address?.message}>
             <input {...register("address")} className={inputCls} placeholder="Full address" />
           </Field>
-          <Field label="Tehsil" error={errors.tehsil?.message}>
-            <input {...register("tehsil")} className={inputCls} placeholder="Tehsil" />
-          </Field>
-          <Field label="District" error={errors.district?.message}>
-            <input {...register("district")} className={inputCls} placeholder="District" />
-          </Field>
-          <Field label="MIS ID" error={errors.misId?.message}>
-            <input {...register("misId")} className={inputCls} placeholder="e.g. 72765" />
+          <Field label="Consent Number" error={errors.consentNumber?.message}>
+            <input {...register("consentNumber")} className={inputCls} placeholder="Consent / CTO number" />
           </Field>
           <Field label="Mobile" error={errors.mobile?.message}>
             <input {...filtered("mobile", digitsOnly)} inputMode="numeric" maxLength={10} className={inputCls} placeholder="10-digit mobile number" />
@@ -268,8 +235,19 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
           {isPublic && (
             <Field label="Login Password">
               <div className="relative">
-                <input type={showPw ? "text" : "password"} {...register("password")} className={inputCls + " pr-10"} placeholder="Set a password to sign in later" />
-                <button type="button" tabIndex={-1} onClick={() => setShowPw((s) => !s)} className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600" aria-label={showPw ? "Hide password" : "Show password"}>
+                <input
+                  type={showPw ? "text" : "password"}
+                  {...register("password")}
+                  className={inputCls + " pr-10"}
+                  placeholder="Set a password to sign in later"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPw((v) => !v)}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                >
                   {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
               </div>
@@ -283,91 +261,14 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
               </ul>
             </Field>
           )}
-        </Grid>
-      </Card>
+        </div>
+      </div>
 
-      {/* Consent details */}
-      <Card title="Consent Details" icon={<FileText className="h-4 w-4 text-teal-600" />}>
-        <Grid>
-          <Field label="Consent Order No." error={errors.consentNumber?.message}>
-            <input {...register("consentNumber")} className={inputCls} placeholder="e.g. 2021-2022/TCD/7154" />
-          </Field>
-          <Field label="Consent order date" error={errors.consentOrderDate?.message}>
-            <input type="date" {...register("consentOrderDate")} className={inputCls} />
-          </Field>
-          <Field label="Consent validity — from" error={errors.consentValidFrom?.message}>
-            <input type="date" {...register("consentValidFrom")} className={inputCls} />
-          </Field>
-          <Field label="Consent validity — to" error={errors.consentValidTo?.message}>
-            <input type="date" {...register("consentValidTo")} className={inputCls} />
-          </Field>
-        </Grid>
-      </Card>
-
-      {/* Hazardous waste details */}
-      <Card title="Hazardous Waste Details" icon={<Trash2 className="h-4 w-4 text-teal-600" />}>
-        <Grid>
-          <Field label="HWM Authorization No." error={errors.hwmAuthNo?.message}>
-            <input {...register("hwmAuthNo")} className={inputCls} placeholder="e.g. RPCB/HWM/2022-2023/TCD/HSW/14" />
-          </Field>
-          <Field label="Authorization order date" error={errors.hwmAuthDate?.message}>
-            <input type="date" {...register("hwmAuthDate")} className={inputCls} />
-          </Field>
-          <Field label="Authorization validity — from" error={errors.hwmValidFrom?.message}>
-            <input type="date" {...register("hwmValidFrom")} className={inputCls} />
-          </Field>
-          <Field label="Authorization validity — to" error={errors.hwmValidTo?.message}>
-            <input type="date" {...register("hwmValidTo")} className={inputCls} />
-          </Field>
-          <Field label="Authorised quantity">
-            <div className="flex gap-2">
-              {(() => {
-                const r = register("authQty");
-                return (
-                  <input
-                    {...r}
-                    onChange={(e) => {
-                      e.target.value = numOnly(e.target.value);
-                      return r.onChange(e);
-                    }}
-                    inputMode="decimal"
-                    className={inputCls}
-                    placeholder="Quantity"
-                  />
-                );
-              })()}
-              <select {...register("authQtyUnit")} className={inputCls + " w-24 shrink-0"}>
-                <option value="kg">kg</option>
-                <option value="MT">MT</option>
-              </select>
-            </div>
-            <p className="mt-1 text-[11px] text-slate-400">
-              Stored as {authQtyKg != null ? <span className="font-semibold text-teal-600">{authQtyKg} kg</span> : "kg"} (MT is converted ×1000).
-            </p>
-          </Field>
-          <Field label="TSDF name" error={errors.tsdfName?.message}>
-            <input {...register("tsdfName")} className={inputCls} placeholder="Treatment/disposal facility" />
-          </Field>
-          <Field label="TSDF full address" error={errors.tsdfAddress?.message}>
-            <input {...register("tsdfAddress")} className={inputCls} placeholder="Facility address" />
-          </Field>
-        </Grid>
-      </Card>
-
-      {/* Authorised signatory */}
-      <Card title="Authorised Signatory" icon={<UserCheck className="h-4 w-4 text-teal-600" />}>
-        <Grid>
-          <Field label="Name of authorised signatory" error={errors.signatoryName?.message}>
-            <input {...register("signatoryName")} className={inputCls} placeholder="Full name" />
-          </Field>
-          <Field label="Designation" error={errors.signatoryDesignation?.message}>
-            <input {...register("signatoryDesignation")} className={inputCls} placeholder="e.g. Prop. / Manager" />
-          </Field>
-        </Grid>
-      </Card>
-
-      {/* Plant capacity (KLD) */}
-      <Card title="Plant Capacity (KLD)" icon={<Droplets className="h-4 w-4 text-teal-600" />}>
+      {/* capacities (KLD) */}
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+        <h2 className="mb-3 flex items-center gap-2 font-display text-sm font-bold uppercase tracking-wide text-slate-800">
+          <Droplets className="h-4 w-4 text-teal-600" /> Treatment Capacities (KLD)
+        </h2>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="ETP Capacity (KLD)" error={errors.etpCapacity?.message}>
             <input type="number" step="any" {...register("etpCapacity")} className={inputCls} placeholder="0" />
@@ -391,7 +292,7 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
             <input type="number" step="any" {...register("roStage4")} className={inputCls} placeholder="0" />
           </Field>
         </div>
-      </Card>
+      </div>
 
       <Button
         type="submit"
@@ -408,21 +309,6 @@ export function RegistrationForm({ mode }: { mode: "public" | "admin" }) {
 
 const inputCls =
   "h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-teal-400 focus:bg-white";
-
-function Card({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-      <h2 className="mb-3 flex items-center gap-2 font-display text-sm font-bold uppercase tracking-wide text-slate-800">
-        {icon} {title}
-      </h2>
-      {children}
-    </div>
-  );
-}
-
-function Grid({ children }: { children: React.ReactNode }) {
-  return <div className="grid gap-4 sm:grid-cols-2">{children}</div>;
-}
 
 function Field({ label, error, children }: { label: string; error?: string; children: React.ReactNode }) {
   return (
