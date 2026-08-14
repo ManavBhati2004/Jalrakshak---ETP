@@ -6,8 +6,9 @@ import { toast } from "sonner";
 import { useDataStore } from "@/lib/store/data";
 import { Button } from "@/components/ui/button";
 import type { Industry } from "@/lib/types";
-import { buildMonthlyCompliance } from "@/lib/data/monthly";
+import { buildMonthlyCompliance, monthEntries } from "@/lib/data/monthly";
 import { downloadMonthlyWorkbook } from "@/lib/data/excel-export";
+import { MonthlyPrintSheets } from "@/components/dashboard/monthly-print-sheets";
 import { formatNumber } from "@/lib/utils";
 
 const mt = (kg: number) => `${formatNumber(Math.round((kg / 1000) * 1000) / 1000)} MT`;
@@ -33,6 +34,7 @@ export function MonthlyReturn({ industry }: { industry: Industry }) {
     () => (month ? buildMonthlyCompliance(entries, industry.id, month, Number(clothsInput) || 0) : null),
     [entries, industry.id, month, clothsInput],
   );
+  const monthlyEntries = useMemo(() => (month ? monthEntries(entries, industry.id, month) : []), [entries, industry.id, month]);
 
   const saveCloths = () => {
     setMonthlyProduction(industry.id, month, Number(clothsInput) || 0);
@@ -136,6 +138,9 @@ export function MonthlyReturn({ industry }: { industry: Industry }) {
         <p className="mt-2 text-[11px] text-muted-foreground">
           The full RSPCB 6-sheet workbook (daily water/RO/MEE/kWh grids + sludge-salt ledger in MT + this compliance report) is available via <span className="font-medium">Download Excel</span>. Figures use submitted/approved entries only.
         </p>
+
+        {/* daily-grid regulator sheets — print only (§12) */}
+        <MonthlyPrintSheets industry={industry} monthly={monthlyEntries} month={month} />
       </div>
     </div>
   );

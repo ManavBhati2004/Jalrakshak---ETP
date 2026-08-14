@@ -333,8 +333,12 @@
   }
 }
 
-/* ---- Monthly Return print (browser Save-as-PDF): show only the compliance report ---- */
+/* ---- Monthly Return print (browser Save-as-PDF): compliance report + daily-grid sheets ---- */
 @media print {
+  @page {
+    size: A4 landscape;
+    margin: 9mm;
+  }
   body * {
     visibility: hidden;
   }
@@ -351,5 +355,56 @@
   }
   .mr-screen {
     display: none !important;
+  }
+  thead {
+    display: table-header-group; /* repeat headers across page breaks */
+  }
+  .mps-sheet {
+    break-before: page;
+    page-break-before: always;
+  }
+  .mps-head h2 {
+    font-size: 12px;
+    margin: 0 0 3px;
+  }
+  .mps-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    font-size: 8px;
+    color: #333;
+  }
+  .mps-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 7px;
+    margin-top: 5px;
+  }
+  .mps-table th,
+  .mps-table td {
+    border: 1px solid #999;
+    padding: 2px 3px;
+    text-align: center;
+    vertical-align: middle;
+  }
+  .mps-table thead th {
+    background: #eef2ff;
+  }
+  .mps-date {
+    text-align: left !important;
+    white-space: nowrap;
+  }
+  .mps-total,
+  .mps-foot td {
+    font-weight: 700;
+    background: #f3f6fa;
+  }
+  .mps-missing td {
+    color: #bbb;
+  }
+  .mps-note {
+    font-size: 8px;
+    color: #555;
+    margin-top: 5px;
   }
 }
