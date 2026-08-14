@@ -14,8 +14,11 @@ import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/lib/store/auth";
 import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
+import { monthEntries, ledgerRollup } from "@/lib/data/monthly";
+import { round1 } from "@/lib/data/etp-calc";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
 import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
+import { Zap } from "lucide-react";
 import type { EtpEntry } from "@/lib/types";
 
 export function EtpOverview() {
@@ -53,6 +56,19 @@ export function EtpOverview() {
   const pending = mine.filter((e) => e.status === "pending").length;
   const myCompliance = compliance.find((c) => c.industryId === industryId);
 
+  // This-month hazardous-waste + energy roll-up (kg / kWh) from the structured entries.
+  const monthStr = todayStr.slice(0, 7);
+  const monthlyEntries = useMemo(
+    () => (monthStr && industryId ? monthEntries(etpEntries, industryId, monthStr) : []),
+    [etpEntries, industryId, monthStr],
+  );
+  const sludgeDispatchedKg = ledgerRollup(monthlyEntries, "sludge").disposalKg;
+  const saltDispatchedKg = ledgerRollup(monthlyEntries, "salt").disposalKg;
+  const energyKwh = useMemo(
+    () => round1(monthlyEntries.reduce((s, e) => s + Object.values(e.energy ?? {}).reduce((a, m) => a + (m?.total ?? 0), 0), 0)),
+    [monthlyEntries],
+  );
+
   if (!industry) {
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
@@ -69,7 +85,6 @@ export function EtpOverview() {
     { label: "ETP Reuse", value: latest?.etpReuse, icon: Recycle, accent: "#10b981" },
     { label: "RO Permeate", value: latest?.roPermeate, icon: Waves, accent: "#6366f1" },
     { label: "RO Reject", value: latest?.roReject, icon: Waves, accent: "#f59e0b" },
-    { label: "Sludge → TSDF", value: latest?.sludgeToTSDF, icon: Trash2, accent: "#a78bfa" },
   ];
 
   const columns: ColumnDef<EtpEntry>[] = [
@@ -105,7 +120,9 @@ export function EtpOverview() {
       "RO Inlet (m³)": e.roInlet,
       "RO Reject (m³)": e.roReject,
       "RO Permeate (m³)": e.roPermeate,
-      "Sludge to TSDF (m³)": e.sludgeToTSDF,
+      "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
+      "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
+      "Energy (kWh)": e.energy ? round1(Object.values(e.energy).reduce((a, m) => a + (m?.total ?? 0), 0)) : "",
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,
@@ -150,6 +167,19 @@ export function EtpOverview() {
           <Stat icon={<Clock className="h-4 w-4" />} label="Pending" value={pending} accent="#f59e0b" />
           <Stat icon={<Waves className="h-4 w-4" />} label="Alerts" value={myAlerts.length} accent="#ef4444" />
         </div>
+      </div>
+
+      {/* this month — hazardous waste (kg) + energy (kWh) + monthly return */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <MonthStat icon={<Trash2 className="h-4 w-4" />} label="Sludge dispatched · this month" value={`${formatNumber(sludgeDispatchedKg)} kg`} accent="#a78bfa" />
+        <MonthStat icon={<Trash2 className="h-4 w-4" />} label="MEE salt dispatched · this month" value={`${formatNumber(saltDispatchedKg)} kg`} accent="#f472b6" />
+        <MonthStat icon={<Zap className="h-4 w-4" />} label="Energy · this month" value={`${formatNumber(energyKwh)} kWh`} accent="#f59e0b" />
+        <Link href="/dashboard/monthly-return" className="flex flex-col justify-center rounded-2xl border border-primary/40 bg-primary/5 p-4 transition-colors hover:bg-primary/10">
+          <span className="text-xs font-semibold uppercase tracking-wide text-primary">RSPCB Monthly Return</span>
+          <span className="mt-1 flex items-center gap-1 text-sm font-medium text-foreground">
+            Download exact Excel <ArrowRight className="h-4 w-4" />
+          </span>
+        </Link>
       </div>
 
       {/* total water intake + today-vs-yesterday + balance */}
@@ -285,6 +315,16 @@ function Stat({ icon, label, value, accent }: { icon: React.ReactNode; label: st
     <div className="rounded-2xl border border-border bg-card p-4">
       <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: `${accent}1f`, color: accent }}>{icon}</span>
       <p className="mt-3 font-display text-2xl font-bold text-foreground">{value}</p>
+      <p className="text-xs text-muted-foreground">{label}</p>
+    </div>
+  );
+}
+
+function MonthStat({ icon, label, value, accent }: { icon: React.ReactNode; label: string; value: string; accent: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4">
+      <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: `${accent}1f`, color: accent }}>{icon}</span>
+      <p className="mt-3 font-mono text-xl font-bold text-foreground">{value}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );

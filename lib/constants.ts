@@ -44,12 +44,14 @@ const ETP: RoleId[] = ["etp"];
 export const DASHBOARD_NAV: NavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: "LayoutDashboard", group: "Overview", roles: ALL },
   { label: "ETP Data Entry", href: "/dashboard/etp-entry", icon: "ClipboardCheck", group: "Overview", roles: ETP },
+  { label: "Monthly Return", href: "/dashboard/monthly-return", icon: "FileSpreadsheet", group: "Overview", roles: ETP },
   { label: "Alerts", href: "/dashboard/alerts", icon: "BellRing", group: "Overview", roles: ETP },
   { label: "Help Center", href: "/dashboard/help", icon: "LifeBuoy", group: "Overview", roles: ETP },
   { label: "Industries", href: "/dashboard/industries", icon: "Factory", group: "Monitoring", roles: ADMIN },
   { label: "ETP Units", href: "/dashboard/etp", icon: "Droplets", group: "Monitoring", roles: ADMIN },
   { label: "Approvals", href: "/dashboard/approvals", icon: "CheckCircle2", group: "Governance", roles: ADMIN },
   { label: "Compliance", href: "/dashboard/compliance", icon: "ShieldCheck", group: "Governance", roles: ADMIN },
+  { label: "Monthly Return", href: "/dashboard/monthly-return", icon: "FileSpreadsheet", group: "Governance", roles: ADMIN },
   { label: "Alerts", href: "/dashboard/alerts", icon: "BellRing", group: "Governance", roles: ADMIN },
 ];
 

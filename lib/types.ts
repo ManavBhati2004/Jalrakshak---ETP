@@ -80,6 +80,8 @@ export interface Industry {
   signatoryDesignation?: string;
   /** Durable first-time-registration completion marker; null/undefined => onboarding incomplete. */
   registrationCompletedAt?: string | null;
+  /** Manual monthly compliance input: cloths production in meters, keyed by "YYYY-MM". */
+  monthlyProduction?: Record<string, number>;
   lastReadingAt: string | null;
   alertsCount: number;
   registeredAt: string;

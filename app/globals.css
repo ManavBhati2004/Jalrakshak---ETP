@@ -332,3 +332,24 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- Monthly Return print (browser Save-as-PDF): show only the compliance report ---- */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .mr-print,
+  .mr-print * {
+    visibility: visible;
+  }
+  .mr-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    border: none !important;
+  }
+  .mr-screen {
+    display: none !important;
+  }
+}

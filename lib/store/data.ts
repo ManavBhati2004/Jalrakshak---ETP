@@ -124,6 +124,7 @@ interface DataState {
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
   completeRegistration: (industryId: string, patch: Partial<RegisterInput>) => void;
+  setMonthlyProduction: (industryId: string, month: string, meters: number) => void;
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
   resetData: () => void;
@@ -661,6 +662,14 @@ export const useDataStore = create<DataState>()(
           ),
         }));
       },
+
+      // Monthly compliance manual field: cloths production (meters) per unit/month.
+      setMonthlyProduction: (industryId, month, meters) =>
+        set((s) => ({
+          industries: s.industries.map((i) =>
+            i.id === industryId ? { ...i, monthlyProduction: { ...(i.monthlyProduction ?? {}), [month]: meters } } : i,
+          ),
+        })),
 
       acknowledgeAlert: (id) =>
         set((s) => ({ alerts: s.alerts.map((a) => (a.id === id ? { ...a, status: "acknowledged" } : a)) })),
