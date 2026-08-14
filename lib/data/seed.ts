@@ -17,7 +17,7 @@ import type {
 import { complianceStatus, ALERT_META, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
 import { groupGrandTotals, round1 } from "@/lib/data/etp-calc";
 
-export const DEMO_TODAY = "2026-06-20";
+export const DEMO_TODAY = "2026-08-14";
 
 /** Enrich the raw seed units with realistic RSPCB prescribed-return registration fields
  *  (from the Balotra cluster / the Mayank Texofin Excel) so the authorisation warning,
@@ -292,27 +292,61 @@ export function buildCompliance(): ComplianceRecord[] {
 /* ------------------------------------------------------------------ */
 /* ETP daily water-balance entries (individual ETP units)              */
 /* ------------------------------------------------------------------ */
+
+/** A full month of daily rows per unit, like the client Excel logbook. */
+const SEED_DAYS = 31;
+
+/** Per-meter realistic ranges taken from the client Excel (`7. MAYANK TEXOFIN JULY 2026`):
+ *  `init` = opening cumulative reading, `min`/`max` = the daily Total band (M³ for water,
+ *  kWh for energy). RO/MEE meters are legitimately small; the big streams are large. */
+const WATER_SEED: Record<string, { init: number; min: number; max: number }> = {
+  RAW_FRESH_WATER: { init: 14198, min: 15, max: 32 },
+  ETP_INLET_ALL_STREAMS: { init: 684654, min: 90, max: 180 },
+  TERTIARY_TREATED: { init: 268259, min: 90, max: 175 },
+  ETP_DIRECT_REUSE: { init: 205495, min: 85, max: 165 },
+  RO_FEED_1_2: { init: 43710, min: 6, max: 13 },
+  RO_PERMEATE_COMMON: { init: 37034, min: 5, max: 10 },
+  RO_REJECT_1_2: { init: 6608, min: 1, max: 2.5 },
+  RO_PERMEATE_3_4: { init: 0, min: 0, max: 3.6 },
+  RO_REJECT_3_4: { init: 0, min: 0, max: 3 },
+  MEE_FEED: { init: 2546, min: 0, max: 9 },
+  MEE_CONDENSATE: { init: 2114, min: 0, max: 8 },
+  MEE_REJECT: { init: 419, min: 0, max: 1 },
+};
+const ENERGY_SEED: Record<string, { init: number; min: number; max: number }> = {
+  ETP_POWER: { init: 774601, min: 130, max: 290 },
+  RO_POWER: { init: 41302, min: 8, max: 25 },
+  MEE_POWER: { init: 6890, min: 0, max: 42 },
+};
+
 export function buildEtpEntries(): EtpEntry[] {
   const entries: EtpEntry[] = [];
   let n = 0;
   const etpUnits = industries.filter((i) => i.isIndividualETP);
   for (const ind of etpUnits) {
     const rnd = mulberry32(hashStr(ind.id + "etp"));
-    // Running cumulative meter bases (carry-forward: next-day Initial = prior-day Final).
-    const waterBase: Record<string, number> = {};
-    for (const m of WATER_METERS) waterBase[m.code] = round1(ind.permittedKLD * (40 + rnd() * 80));
-    const energyBase: Record<string, number> = {};
-    for (const e of ENERGY_METERS) energyBase[e.code] = round1(ind.permittedKLD * (200 + rnd() * 150));
-    let sludgeOpening = round1(ind.permittedKLD * (2 + rnd() * 3)); // kg
-    let saltOpening = round1(ind.permittedKLD * (0.4 + rnd() * 0.6)); // kg
 
-    for (let d = 3; d >= 1; d--) {
+    // Cumulative meter bases (carry-forward: next-day Initial = prior-day Final), seeded from
+    // the Excel opening readings with a small per-unit offset so units differ but stay realistic.
+    const waterBase: Record<string, number> = {};
+    for (const m of WATER_METERS) waterBase[m.code] = round1(WATER_SEED[m.code].init * (0.96 + rnd() * 0.08));
+    const energyBase: Record<string, number> = {};
+    for (const e of ENERGY_METERS) energyBase[e.code] = round1(ENERGY_SEED[e.code].init * (0.96 + rnd() * 0.08));
+    let sludgeOpening = round1(12000 + rnd() * 800); // kg (~12.0–12.8 MT, like the Excel)
+    let saltOpening = round1(800 + rnd() * 80); // kg (~0.80–0.88 MT)
+
+    // Two sludge dispatch days spread across the month (with manifest + disposal date).
+    const dispatchDays = new Set([SEED_DAYS - 10, SEED_DAYS - 22]);
+
+    for (let d = SEED_DAYS - 1; d >= 0; d--) {
       const date = dayISO(d).slice(0, 10);
+      const off = (SEED_DAYS - 1 - d) % 7 === 6; // every 7th day → weekly off (no production)
 
       const water: Record<string, MeterReading> = {};
       for (const m of WATER_METERS) {
+        const cfg = WATER_SEED[m.code];
         const initial = waterBase[m.code];
-        const flow = round1(ind.permittedKLD * (0.2 + rnd() * 0.7));
+        const flow = off ? 0 : round1(cfg.min + rnd() * (cfg.max - cfg.min));
         const final = round1(initial + flow);
         water[m.code] = { initial, final, total: round1(final - initial) };
         waterBase[m.code] = final;
@@ -321,28 +355,29 @@ export function buildEtpEntries(): EtpEntry[] {
 
       const energy: Record<string, MeterReading> = {};
       for (const e of ENERGY_METERS) {
+        const cfg = ENERGY_SEED[e.code];
         const initial = energyBase[e.code];
-        const flow = round1(ind.permittedKLD * (0.8 + rnd() * 1.4));
+        const flow = off ? 0 : round1(cfg.min + rnd() * (cfg.max - cfg.min));
         const final = round1(initial + flow);
         energy[e.code] = { initial, final, total: round1(final - initial) };
         energyBase[e.code] = final;
       }
 
-      // Sludge ledger (one dispatch on the middle day); salt accumulates.
-      const sludgeGen = round1(ind.permittedKLD * (0.4 + rnd() * 0.9));
-      const sludgeDispatch = d === 2 ? round1(sludgeOpening * 0.5) : 0;
+      // Sludge ledger (kg): daily generation, two dispatch days; salt accumulates (kg).
+      const sludgeGen = off ? 0 : round1(150 + rnd() * 160);
+      const sludgeDispatch = dispatchDays.has(d) ? round1(sludgeOpening * 0.45) : 0;
       const sludge: HwLedger = {
         opening: sludgeOpening,
         generation: sludgeGen,
         dateOfDisposal: sludgeDispatch > 0 ? date : "",
         dispatch: sludgeDispatch,
-        manifestNo: sludgeDispatch > 0 ? `MF-${ind.id}-${d}` : "",
+        manifestNo: sludgeDispatch > 0 ? `MF-${ind.misId ?? ind.id}-${SEED_DAYS - d}` : "",
         closing: round1(sludgeOpening + sludgeGen - sludgeDispatch),
         remark: "",
       };
       sludgeOpening = sludge.closing;
 
-      const saltGen = round1(ind.permittedKLD * (0.05 + rnd() * 0.15));
+      const saltGen = off ? 0 : round1(5 + rnd() * 8);
       const salt: HwLedger = {
         opening: saltOpening,
         generation: saltGen,
@@ -381,11 +416,11 @@ export function buildEtpEntries(): EtpEntry[] {
         sludgeToTSDF: 0,
         totalWaterIntake: round1(fresh + etpReuse + roPermeate),
         unit: "KL",
-        status: d === 1 ? "pending" : "approved",
+        status: d === 0 ? "pending" : "approved", // most recent day awaits review
         submittedAt: dayISO(d, "09:00"),
         water,
         waterTotals,
-        waterRemark: "",
+        waterRemark: off ? "Weekly off — no production" : "",
         energy,
         energyRemark: "",
         sludge,
