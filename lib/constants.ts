@@ -62,7 +62,7 @@ export const ADMIN_ONLY_PATHS = [
   "/dashboard/compliance",
   "/dashboard/reports",
 ];
-export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help"];
+export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help", "/dashboard/onboarding"];
 
 /** Whether a role may visit a dashboard path (used for redirect gating). */
 export function canAccessPath(role: RoleId, pathname: string): boolean {
@@ -91,6 +91,81 @@ export const READING_TIMES = [
   { value: "08:00", label: "08:00 AM (Morning)", shift: "morning" as const },
   { value: "20:00", label: "08:00 PM (Evening)", shift: "evening" as const },
 ];
+
+/* ---------------- RSPCB prescribed daily meters (from the real client Excel) ----------------
+   Source of truth: "7. MAYANK TEXOFIN JULY 2026.xlsx" (analysed in the feasibility report).
+   12 water meters split exactly as the workbook's three water sheets (Daily / RO / MEE),
+   3 energy meters (kWh sheet). Labels reproduced VERBATIM for print/PDF output; stable codes
+   for storage. Water unit "M3", energy unit "Kwh". */
+export type WaterGroup = "daily" | "ro" | "mee";
+
+export interface WaterMeterDef {
+  code: string;
+  label: string; // verbatim Excel section label
+  group: WaterGroup;
+  /** true = maps to a retained legacy scalar field on EtpEntry (dashboards/CSV). */
+  legacyKey?: "freshWaterConsumption" | "etpInlet" | "etpReuse" | "roInlet" | "roPermeate" | "roReject";
+}
+
+export const WATER_METERS: readonly WaterMeterDef[] = [
+  // --- Daily Log sheet (4) ---
+  { code: "RAW_FRESH_WATER", label: "Raw Fresh Water / Fresh Water Input", group: "daily", legacyKey: "freshWaterConsumption" },
+  { code: "ETP_INLET_ALL_STREAMS", label: "ETP inlet Section-Total of all stream", group: "daily", legacyKey: "etpInlet" },
+  { code: "TERTIARY_TREATED", label: "Tertiary Treated Section- Outlet", group: "daily" },
+  { code: "ETP_DIRECT_REUSE", label: "ETP Treated directly Reuse", group: "daily", legacyKey: "etpReuse" },
+  // --- RO sheet (5) ---
+  { code: "RO_FEED_1_2", label: "RO FEED ( 1st & 2nd Stage )", group: "ro", legacyKey: "roInlet" },
+  { code: "RO_PERMEATE_COMMON", label: "Total RO permeate Common Meter", group: "ro", legacyKey: "roPermeate" },
+  { code: "RO_REJECT_1_2", label: "RO Reject Section-Total", group: "ro", legacyKey: "roReject" },
+  { code: "RO_PERMEATE_3_4", label: "RO Permeate ( 3rd & 4th Stage )", group: "ro" },
+  { code: "RO_REJECT_3_4", label: "RO Reject ( 3rd & 4th Stage )", group: "ro" },
+  // --- MEE sheet (3) ---
+  { code: "MEE_FEED", label: "Total MEE Feed", group: "mee" },
+  { code: "MEE_CONDENSATE", label: "Total MEE Condensate", group: "mee" },
+  { code: "MEE_REJECT", label: "Total MEE Reject", group: "mee" },
+] as const;
+
+export const WATER_GROUPS: { id: WaterGroup; label: string; unit: string }[] = [
+  { id: "daily", label: "Daily Log — Fresh / ETP / Tertiary / Reuse", unit: "M3" },
+  { id: "ro", label: "RO Section", unit: "M3" },
+  { id: "mee", label: "MEE Section", unit: "M3" },
+];
+
+export interface EnergyMeterDef {
+  code: string;
+  label: string; // verbatim Excel section label
+  panel: string; // Excel "Location of Meter"
+}
+
+export const ENERGY_METERS: readonly EnergyMeterDef[] = [
+  { code: "ETP_POWER", label: "ETP inlet Section-Total of all stream", panel: "Main panel" },
+  { code: "RO_POWER", label: "RO Reject Section-Total", panel: "RO plant panel" },
+  { code: "MEE_POWER", label: "MEE Reject Section Total", panel: "MEE panel" },
+] as const;
+
+export type WaterMeterCode = (typeof WATER_METERS)[number]["code"];
+export type EnergyMeterCode = (typeof ENERGY_METERS)[number]["code"];
+
+/**
+ * The Excel's RO "Grand Total" formula sums Feed + Reject(1&2) + Permeate(3&4) + Reject(3&4)
+ * and EXCLUDES the common Permeate(1&2) meter (`RO_PERMEATE_COMMON`). Reproduced faithfully
+ * behind this flag — the client should confirm whether it is deliberate or a sheet quirk.
+ */
+export const RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON = true;
+
+/**
+ * Non-blocking authorisation warning fires once cumulative dispatch reaches this fraction of
+ * the registered Authorised quantity. Documented, configurable app setting — NOT a claimed
+ * legal rule. ≥100% shows a critical over-authorisation warning; no automatic hard block.
+ */
+export const AUTHORISED_QUANTITY_WARNING_PERCENT = 80;
+
+/**
+ * Daily numeric standard (master prompt §4): up to 7 integer digits + 1 decimal place,
+ * nonnegative, max 9999999.9. Applied to water/energy readings and kg waste quantities.
+ */
+export const DAILY_MAX_VALUE = 9999999.9;
+export const DAILY_DECIMAL_REGEX = /^\d{0,7}(\.\d?)?$/;
 
 /* ---------------- Alert metadata ---------------- */
 export const ALERT_META: Record<

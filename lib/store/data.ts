@@ -13,6 +13,8 @@ import type {
   MeterPoint,
   CetpId,
   EtpEntry,
+  MeterReading,
+  EntryStatus,
 } from "@/lib/types";
 import {
   industries as seedIndustries,
@@ -23,7 +25,8 @@ import {
   buildEtpEntries,
   buildEtpApprovals,
 } from "@/lib/data/seed";
-import { ALERT_META, complianceStatus } from "@/lib/constants";
+import { ALERT_META, complianceStatus, WATER_METERS } from "@/lib/constants";
+import { toMeterReading, groupGrandTotals, toLedger, round1 } from "@/lib/data/etp-calc";
 
 export interface ReadingInput {
   industryId: string;
@@ -57,19 +60,52 @@ export interface RegisterInput {
   roStage2?: number;
   roStage3?: number;
   roStage4?: number;
+  // RSPCB prescribed-return registration (master §3, all optional)
+  misId?: string;
+  tehsil?: string;
+  district?: string;
+  consentOrderNo?: string;
+  consentOrderDate?: string;
+  consentValidFrom?: string;
+  consentValidTo?: string;
+  hwmAuthNo?: string;
+  hwmAuthDate?: string;
+  hwmValidFrom?: string;
+  hwmValidTo?: string;
+  authorisedQuantityKg?: number;
+  authorisedSourceQuantity?: number;
+  authorisedSourceUnit?: "KG" | "MT";
+  tsdfName?: string;
+  tsdfAddress?: string;
+  signatoryName?: string;
+  signatoryDesignation?: string;
+  /** When true, stamps `registrationCompletedAt` (the five-section onboarding is complete). */
+  registrationComplete?: boolean;
 }
 
+export interface MeterInput {
+  initial: number;
+  final: number;
+}
+export interface LedgerInput {
+  opening: number;
+  generation: number;
+  dateOfDisposal: string;
+  dispatch: number;
+  manifestNo: string;
+  remark: string;
+}
+/** Structured RSPCB prescribed-return daily input (12 water + 3 energy meters, 2 kg ledgers). */
 export interface EtpEntryInput {
   industryId: string;
   date: string;
-  freshWaterConsumption: number;
-  etpInlet: number;
-  etpOutlet: number;
-  etpReuse: number;
-  roInlet: number;
-  roReject: number;
-  roPermeate: number;
-  sludgeToTSDF: number;
+  status: EntryStatus; // DRAFT (partial save) | SUBMITTED (to approval workflow)
+  water: Record<string, MeterInput>;
+  waterRemark: string;
+  energy: Record<string, MeterInput>;
+  energyRemark: string;
+  sludge: LedgerInput;
+  salt: LedgerInput;
 }
 
 interface DataState {
@@ -87,6 +123,7 @@ interface DataState {
   sendDisciplinaryAlert: (industryId: string, message: string, severity: AlertSeverity) => void;
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
+  completeRegistration: (industryId: string, patch: Partial<RegisterInput>) => void;
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
   resetData: () => void;
@@ -217,33 +254,69 @@ export const useDataStore = create<DataState>()(
 
       submitEtpEntry: (input) => {
         const ind = get().industries.find((i) => i.id === input.industryId);
-        const totalWaterIntake = input.freshWaterConsumption + input.etpReuse + input.roPermeate;
-        const id = `E-${Date.now().toString(36).toUpperCase()}`;
+        const isSubmit = input.status === "SUBMITTED";
         const submittedAt = nowISO();
+
+        // Build structured prescribed-return readings (authoritative totals).
+        const water: Record<string, MeterReading> = {};
+        for (const code of Object.keys(input.water)) water[code] = toMeterReading(input.water[code].initial, input.water[code].final);
+        const energy: Record<string, MeterReading> = {};
+        for (const code of Object.keys(input.energy)) energy[code] = toMeterReading(input.energy[code].initial, input.energy[code].final);
+        const waterTotals = groupGrandTotals(water);
+        const sludge = toLedger(input.sludge);
+        const salt = toLedger(input.salt);
+
+        // Derive the retained legacy scalars from the water-meter totals (dashboards/CSV).
+        const legacy = (key: string) => {
+          const def = WATER_METERS.find((m) => m.legacyKey === key);
+          return def ? water[def.code]?.total ?? 0 : 0;
+        };
+        const freshWaterConsumption = legacy("freshWaterConsumption");
+        const etpInlet = legacy("etpInlet");
+        const etpReuse = legacy("etpReuse");
+        const roInlet = legacy("roInlet");
+        const roReject = legacy("roReject");
+        const roPermeate = legacy("roPermeate");
+        const totalWaterIntake = round1(freshWaterConsumption + etpReuse + roPermeate);
+
+        // One parent record per unit/date: reuse the id of any existing entry (draft → submit).
+        const prior = get().etpEntries.find((e) => e.industryId === input.industryId && e.date === input.date);
+        const id = prior?.id ?? `E-${Date.now().toString(36).toUpperCase()}`;
 
         const entry: EtpEntry = {
           id,
           industryId: input.industryId,
           industryName: ind?.name ?? "Unknown",
           date: input.date,
-          freshWaterConsumption: input.freshWaterConsumption,
-          etpInlet: input.etpInlet,
-          etpOutlet: input.etpOutlet,
-          etpReuse: input.etpReuse,
-          roInlet: input.roInlet,
-          roReject: input.roReject,
-          roPermeate: input.roPermeate,
-          sludgeToTSDF: input.sludgeToTSDF,
+          freshWaterConsumption,
+          etpInlet,
+          etpOutlet: 0, // legacy field — no prescribed meter maps to it
+          etpReuse,
+          roInlet,
+          roReject,
+          roPermeate,
+          sludgeToTSDF: 0, // legacy KL field — replaced by the kg sludge ledger
           totalWaterIntake,
           unit: "KL",
           status: "pending",
           submittedAt,
+          water,
+          waterTotals,
+          waterRemark: input.waterRemark,
+          energy,
+          energyRemark: input.energyRemark,
+          sludge,
+          salt,
+          entryStatus: input.status,
         };
 
+        // Alerts + the Monitoring-Body approval are created only on SUBMIT (never on drafts).
         const fired: AlertType[] = [];
-        if (totalWaterIntake === 0) fired.push("zero-reading");
-        if (ind && totalWaterIntake > ind.permittedKLD) fired.push("capacity-exceeded");
-        else if (ind && totalWaterIntake > ind.permittedKLD * 0.85) fired.push("high-flow");
+        if (isSubmit) {
+          if (totalWaterIntake === 0) fired.push("zero-reading");
+          if (ind && totalWaterIntake > ind.permittedKLD) fired.push("capacity-exceeded");
+          else if (ind && totalWaterIntake > ind.permittedKLD * 0.85) fired.push("high-flow");
+        }
 
         const newAlerts: Alert[] = fired.map((type, idx) => ({
           id: `AL-${id}-${idx}`,
@@ -253,43 +326,53 @@ export const useDataStore = create<DataState>()(
           industryName: ind?.name ?? null,
           cetpId: null,
           title: ALERT_META[type].label,
-          message: `${ALERT_META[type].label} on ETP water-balance for ${ind?.name ?? "unit"}.`,
+          message: `${ALERT_META[type].label} on ETP daily entry for ${ind?.name ?? "unit"}.`,
           createdAt: submittedAt,
           status: "active",
           relatedReadingId: id,
         }));
 
-        const approval: Approval = {
-          id: `A-${Date.now().toString(36).toUpperCase()}`,
-          readingId: id,
-          industryId: input.industryId,
-          industryName: ind?.name ?? "Unknown",
-          cetpId: null,
-          meterPoint: "ETP Water Balance",
-          difference: totalWaterIntake,
-          unit: "KL",
-          hasPhoto: true,
-          remarks: "Daily ETP water-balance entry.",
-          stage: "submitted",
-          submittedAt,
-          reviewedAt: null,
-          reviewer: null,
-          alerts: fired,
-          timeline: [
-            { stage: "submitted", label: "Submitted", at: submittedAt, by: ind?.contactPerson ?? "Operator", done: true },
-            { stage: "verification", label: "Under Verification", at: null, by: null, done: false },
-            { stage: "approved", label: "Approved", at: null, by: null, done: false },
-          ],
-        };
+        const approval: Approval | null = isSubmit
+          ? {
+              id: `A-${Date.now().toString(36).toUpperCase()}`,
+              readingId: id,
+              industryId: input.industryId,
+              industryName: ind?.name ?? "Unknown",
+              cetpId: null,
+              meterPoint: "ETP Water Balance",
+              difference: totalWaterIntake,
+              unit: "KL",
+              hasPhoto: true,
+              remarks: "Daily ETP prescribed-return entry.",
+              stage: "submitted",
+              submittedAt,
+              reviewedAt: null,
+              reviewer: null,
+              alerts: fired,
+              timeline: [
+                { stage: "submitted", label: "Submitted", at: submittedAt, by: ind?.contactPerson ?? "Operator", done: true },
+                { stage: "verification", label: "Under Verification", at: null, by: null, done: false },
+                { stage: "approved", label: "Approved", at: null, by: null, done: false },
+              ],
+            }
+          : null;
 
-        set((s) => ({
-          etpEntries: [entry, ...s.etpEntries],
-          approvals: [approval, ...s.approvals],
-          alerts: [...newAlerts, ...s.alerts],
-          industries: s.industries.map((i) =>
-            i.id === input.industryId ? { ...i, lastReadingAt: submittedAt, alertsCount: i.alertsCount + fired.length } : i,
-          ),
-        }));
+        set((s) => {
+          const etpEntries = [entry, ...s.etpEntries.filter((e) => !(e.industryId === input.industryId && e.date === input.date))];
+          const approvals = approval
+            ? [approval, ...s.approvals.filter((a) => a.readingId !== id)]
+            : s.approvals.filter((a) => a.readingId !== id);
+          return {
+            etpEntries,
+            approvals,
+            alerts: [...newAlerts, ...s.alerts],
+            industries: s.industries.map((i) =>
+              i.id === input.industryId && isSubmit
+                ? { ...i, lastReadingAt: submittedAt, alertsCount: i.alertsCount + fired.length }
+                : i,
+            ),
+          };
+        });
 
         return { entry, alerts: fired };
       },
@@ -486,6 +569,26 @@ export const useDataStore = create<DataState>()(
           roStage2: input.roStage2,
           roStage3: input.roStage3,
           roStage4: input.roStage4,
+          // RSPCB prescribed-return registration fields (master §3)
+          misId: input.misId,
+          tehsil: input.tehsil,
+          district: input.district,
+          consentOrderNo: input.consentOrderNo,
+          consentOrderDate: input.consentOrderDate,
+          consentValidFrom: input.consentValidFrom,
+          consentValidTo: input.consentValidTo,
+          hwmAuthNo: input.hwmAuthNo,
+          hwmAuthDate: input.hwmAuthDate,
+          hwmValidFrom: input.hwmValidFrom,
+          hwmValidTo: input.hwmValidTo,
+          authorisedQuantityKg: input.authorisedQuantityKg,
+          authorisedSourceQuantity: input.authorisedSourceQuantity,
+          authorisedSourceUnit: input.authorisedSourceUnit,
+          tsdfName: input.tsdfName,
+          tsdfAddress: input.tsdfAddress,
+          signatoryName: input.signatoryName,
+          signatoryDesignation: input.signatoryDesignation,
+          registrationCompletedAt: input.registrationComplete ? new Date().toISOString() : null,
           lastReadingAt: null,
           alertsCount: 0,
           registeredAt: new Date().toISOString(),
@@ -509,6 +612,56 @@ export const useDataStore = create<DataState>()(
         return industry;
       },
 
+      // Onboarding gate: fill the RSPCB registration fields on an EXISTING unit and stamp
+      // completion so the operator's dashboard/daily-entry unlocks.
+      completeRegistration: (industryId, patch) => {
+        set((s) => ({
+          industries: s.industries.map((i) =>
+            i.id === industryId
+              ? {
+                  ...i,
+                  name: patch.name ?? i.name,
+                  ownerName: patch.ownerName ?? i.ownerName,
+                  contactPerson: patch.ownerName ?? i.contactPerson,
+                  area: patch.area ?? i.area,
+                  address: patch.address ?? i.address,
+                  mobile: patch.mobile ?? i.mobile,
+                  email: patch.email ?? i.email,
+                  consentNumber: patch.consentNumber ?? i.consentNumber,
+                  permittedKLD: patch.permittedKLD ?? i.permittedKLD,
+                  etpCapacity: patch.etpCapacity ?? i.etpCapacity,
+                  roCapacity: patch.roCapacity ?? i.roCapacity,
+                  meeCapacity: patch.meeCapacity ?? i.meeCapacity,
+                  maxEffluentGeneration: patch.maxEffluentGeneration ?? i.maxEffluentGeneration,
+                  roStage1: patch.roStage1 ?? i.roStage1,
+                  roStage2: patch.roStage2 ?? i.roStage2,
+                  roStage3: patch.roStage3 ?? i.roStage3,
+                  roStage4: patch.roStage4 ?? i.roStage4,
+                  misId: patch.misId ?? i.misId,
+                  tehsil: patch.tehsil ?? i.tehsil,
+                  district: patch.district ?? i.district,
+                  consentOrderNo: patch.consentOrderNo ?? i.consentOrderNo,
+                  consentOrderDate: patch.consentOrderDate ?? i.consentOrderDate,
+                  consentValidFrom: patch.consentValidFrom ?? i.consentValidFrom,
+                  consentValidTo: patch.consentValidTo ?? i.consentValidTo,
+                  hwmAuthNo: patch.hwmAuthNo ?? i.hwmAuthNo,
+                  hwmAuthDate: patch.hwmAuthDate ?? i.hwmAuthDate,
+                  hwmValidFrom: patch.hwmValidFrom ?? i.hwmValidFrom,
+                  hwmValidTo: patch.hwmValidTo ?? i.hwmValidTo,
+                  authorisedQuantityKg: patch.authorisedQuantityKg ?? i.authorisedQuantityKg,
+                  authorisedSourceQuantity: patch.authorisedSourceQuantity ?? i.authorisedSourceQuantity,
+                  authorisedSourceUnit: patch.authorisedSourceUnit ?? i.authorisedSourceUnit,
+                  tsdfName: patch.tsdfName ?? i.tsdfName,
+                  tsdfAddress: patch.tsdfAddress ?? i.tsdfAddress,
+                  signatoryName: patch.signatoryName ?? i.signatoryName,
+                  signatoryDesignation: patch.signatoryDesignation ?? i.signatoryDesignation,
+                  registrationCompletedAt: new Date().toISOString(),
+                }
+              : i,
+          ),
+        }));
+      },
+
       acknowledgeAlert: (id) =>
         set((s) => ({ alerts: s.alerts.map((a) => (a.id === id ? { ...a, status: "acknowledged" } : a)) })),
       resolveAlert: (id) =>
@@ -518,13 +671,13 @@ export const useDataStore = create<DataState>()(
     }),
     {
       name: "jalrakshak-data",
-      version: 8,
+      version: 9,
       skipHydration: true,
       storage: createJSONStorage(() => firestoreStorage),
-      // v8 rolls the ETP data model BACK from the RSPCB prescribed-return shape (the
-      // additive v7 meters/energy/kg-ledgers) to the flat water-balance figures. Reset
-      // anything older than v8 to the current seed so no stale/mixed EtpEntry shape survives.
-      migrate: (persisted, version) => (version < 8 ? seed() : persisted) as DataState,
+      // v9 ADDITIVELY layers the RSPCB prescribed-return structures (12 water + 3 energy
+      // meters, kg sludge/salt ledgers, per-group totals, draft/submit status) + the expanded
+      // registration onto the retained legacy scalar shape. Reseed anything older than v9.
+      migrate: (persisted, version) => (version < 9 ? seed() : persisted) as DataState,
     },
   ),
 );

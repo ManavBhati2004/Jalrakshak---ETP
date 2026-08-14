@@ -11,12 +11,42 @@ import type {
   TrendPoint,
   ReadingShift,
   EtpEntry,
+  MeterReading,
+  HwLedger,
 } from "@/lib/types";
-import { complianceStatus, ALERT_META } from "@/lib/constants";
-
-export const industries = industriesRaw as Industry[];
+import { complianceStatus, ALERT_META, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
+import { groupGrandTotals, round1 } from "@/lib/data/etp-calc";
 
 export const DEMO_TODAY = "2026-06-20";
+
+/** Enrich the raw seed units with realistic RSPCB prescribed-return registration fields
+ *  (from the Balotra cluster / the Mayank Texofin Excel) so the authorisation warning,
+ *  onboarding prefill and Compliance context work out of the box. Marked registration-complete
+ *  so the demo operator is not gated (the onboarding gate still fires for any incomplete unit). */
+export const industries: Industry[] = (industriesRaw as Industry[]).map((i, idx) => ({
+  ...i,
+  misId: i.misId ?? `${69197 + idx * 3568}`,
+  tehsil: i.tehsil ?? "Balotra",
+  district: i.district ?? "Barmer",
+  consentOrderNo: i.consentOrderNo ?? `2021-2022/TCD/${7197 + idx * 43}`,
+  consentOrderDate: i.consentOrderDate ?? "2021-12-01",
+  consentValidFrom: i.consentValidFrom ?? "2021-12-01",
+  consentValidTo: i.consentValidTo ?? "2026-11-30",
+  hwmAuthNo: i.hwmAuthNo ?? `RPCB/HWM/2023-2024/TCD/HSW/${12 + idx}`,
+  hwmAuthDate: i.hwmAuthDate ?? "2022-07-01",
+  hwmValidFrom: i.hwmValidFrom ?? "2022-07-01",
+  hwmValidTo: i.hwmValidTo ?? "2027-06-30",
+  authorisedSourceQuantity: i.authorisedSourceQuantity ?? 15.42,
+  authorisedSourceUnit: i.authorisedSourceUnit ?? "MT",
+  authorisedQuantityKg: i.authorisedQuantityKg ?? 15420,
+  tsdfName: i.tsdfName ?? "Balotra Waste Management Project (Ramky Enviro Engineers Ltd.)",
+  tsdfAddress:
+    i.tsdfAddress ??
+    "Survey No. & Plot No. 1114/274/13 & 1115/274/14, Village Kher, Teh. Pachpadra, Barmer (Raj.)",
+  signatoryName: i.signatoryName ?? i.ownerName,
+  signatoryDesignation: i.signatoryDesignation ?? "Prop.",
+  registrationCompletedAt: i.registrationCompletedAt ?? i.registeredAt,
+}));
 
 /* deterministic PRNG so server + client render identical seed data */
 function mulberry32(seed: number) {
@@ -268,32 +298,99 @@ export function buildEtpEntries(): EtpEntry[] {
   const etpUnits = industries.filter((i) => i.isIndividualETP);
   for (const ind of etpUnits) {
     const rnd = mulberry32(hashStr(ind.id + "etp"));
+    // Running cumulative meter bases (carry-forward: next-day Initial = prior-day Final).
+    const waterBase: Record<string, number> = {};
+    for (const m of WATER_METERS) waterBase[m.code] = round1(ind.permittedKLD * (40 + rnd() * 80));
+    const energyBase: Record<string, number> = {};
+    for (const e of ENERGY_METERS) energyBase[e.code] = round1(ind.permittedKLD * (200 + rnd() * 150));
+    let sludgeOpening = round1(ind.permittedKLD * (2 + rnd() * 3)); // kg
+    let saltOpening = round1(ind.permittedKLD * (0.4 + rnd() * 0.6)); // kg
+
     for (let d = 3; d >= 1; d--) {
-      const fresh = Math.round(ind.permittedKLD * (0.7 + rnd() * 0.25));
-      const etpInlet = Math.round(ind.permittedKLD * (0.85 + rnd() * 0.15));
-      const etpOutlet = Math.round(etpInlet * (0.88 + rnd() * 0.07));
-      const etpReuse = Math.round(etpOutlet * (0.18 + rnd() * 0.1));
-      const roInlet = Math.round(etpOutlet * (0.78 + rnd() * 0.1));
-      const roPermeate = Math.round(roInlet * (0.62 + rnd() * 0.08));
-      const roReject = Math.max(0, roInlet - roPermeate);
-      const sludgeToTSDF = Math.round(ind.permittedKLD * (0.02 + rnd() * 0.03));
+      const date = dayISO(d).slice(0, 10);
+
+      const water: Record<string, MeterReading> = {};
+      for (const m of WATER_METERS) {
+        const initial = waterBase[m.code];
+        const flow = round1(ind.permittedKLD * (0.2 + rnd() * 0.7));
+        const final = round1(initial + flow);
+        water[m.code] = { initial, final, total: round1(final - initial) };
+        waterBase[m.code] = final;
+      }
+      const waterTotals = groupGrandTotals(water);
+
+      const energy: Record<string, MeterReading> = {};
+      for (const e of ENERGY_METERS) {
+        const initial = energyBase[e.code];
+        const flow = round1(ind.permittedKLD * (0.8 + rnd() * 1.4));
+        const final = round1(initial + flow);
+        energy[e.code] = { initial, final, total: round1(final - initial) };
+        energyBase[e.code] = final;
+      }
+
+      // Sludge ledger (one dispatch on the middle day); salt accumulates.
+      const sludgeGen = round1(ind.permittedKLD * (0.4 + rnd() * 0.9));
+      const sludgeDispatch = d === 2 ? round1(sludgeOpening * 0.5) : 0;
+      const sludge: HwLedger = {
+        opening: sludgeOpening,
+        generation: sludgeGen,
+        dateOfDisposal: sludgeDispatch > 0 ? date : "",
+        dispatch: sludgeDispatch,
+        manifestNo: sludgeDispatch > 0 ? `MF-${ind.id}-${d}` : "",
+        closing: round1(sludgeOpening + sludgeGen - sludgeDispatch),
+        remark: "",
+      };
+      sludgeOpening = sludge.closing;
+
+      const saltGen = round1(ind.permittedKLD * (0.05 + rnd() * 0.15));
+      const salt: HwLedger = {
+        opening: saltOpening,
+        generation: saltGen,
+        dateOfDisposal: "",
+        dispatch: 0,
+        manifestNo: "",
+        closing: round1(saltOpening + saltGen),
+        remark: "",
+      };
+      saltOpening = salt.closing;
+
+      // Legacy scalars derived from the mapped water meters.
+      const legacy = (key: string) => {
+        const def = WATER_METERS.find((m) => m.legacyKey === key);
+        return def ? water[def.code].total : 0;
+      };
+      const fresh = legacy("freshWaterConsumption");
+      const etpInlet = legacy("etpInlet");
+      const etpReuse = legacy("etpReuse");
+      const roInlet = legacy("roInlet");
+      const roReject = legacy("roReject");
+      const roPermeate = legacy("roPermeate");
+
       entries.push({
         id: `E-${String(++n).padStart(4, "0")}`,
         industryId: ind.id,
         industryName: ind.name,
-        date: dayISO(d).slice(0, 10),
+        date,
         freshWaterConsumption: fresh,
         etpInlet,
-        etpOutlet,
+        etpOutlet: 0,
         etpReuse,
         roInlet,
         roReject,
         roPermeate,
-        sludgeToTSDF,
-        totalWaterIntake: fresh + etpReuse + roPermeate,
+        sludgeToTSDF: 0,
+        totalWaterIntake: round1(fresh + etpReuse + roPermeate),
         unit: "KL",
         status: d === 1 ? "pending" : "approved",
         submittedAt: dayISO(d, "09:00"),
+        water,
+        waterTotals,
+        waterRemark: "",
+        energy,
+        energyRemark: "",
+        sludge,
+        salt,
+        entryStatus: "SUBMITTED",
       });
     }
   }
