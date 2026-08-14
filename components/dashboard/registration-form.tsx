@@ -1,22 +1,21 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Building2, Droplets, Check, Eye, EyeOff, CheckCircle2, Circle, FileText, Recycle, UserCheck } from "lucide-react";
+import { Building2, Droplets, Check, FileText, Recycle, UserCheck } from "lucide-react";
 import { toast } from "sonner";
-import { doc, setDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
 import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
-import { useAuthStore } from "@/lib/store/auth";
-import { useAccountsStore } from "@/lib/store/accounts";
-import { remoteApply, emptyData, writeOwnedIndustry, syncContext } from "@/lib/data/firestore-storage";
 import { toCanonicalKg, round1 } from "@/lib/data/etp-calc";
-import { cn, formatNumber } from "@/lib/utils";
+import { formatNumber } from "@/lib/utils";
 
-export type RegistrationMode = "public" | "admin" | "onboarding";
+/**
+ * Monitoring-Body (admin) registration form — the SOLE path to create/register an ETP unit.
+ * ETP operators cannot self-register; their login accounts are provisioned out-of-band and
+ * their unit is created (fully registered) here by the regulator.
+ */
 
 // Input transforms (applied on every keystroke).
 const alphaOnly = (v: string) => v.replace(/[^A-Za-z ]/g, "");
@@ -70,81 +69,23 @@ const hwmRange = (v: { hwmValidFrom?: string; hwmValidTo?: string }) => rangeOk(
 const consentMsg = { message: "Consent validity-to must not be earlier than validity-from", path: ["consentValidTo"] };
 const hwmMsg = { message: "Authorization validity-to must not be earlier than validity-from", path: ["hwmValidTo"] };
 
-const publicSchema = z
-  .object({
-    ...baseShape,
-    password: z
-      .string()
-      .min(8, "At least 8 characters")
-      .regex(/[A-Za-z]/, "Add a letter")
-      .regex(/[0-9]/, "Add a number")
-      .regex(/[^A-Za-z0-9]/, "Add a special character"),
-  })
-  .refine(consentRange, consentMsg)
-  .refine(hwmRange, hwmMsg);
 const adminSchema = z.object(baseShape).refine(consentRange, consentMsg).refine(hwmRange, hwmMsg);
+type FormValues = z.input<typeof adminSchema>;
 
-type FormValues = z.input<typeof publicSchema>;
-
-export function RegistrationForm({ mode }: { mode: RegistrationMode }) {
-  const isPublic = mode === "public";
-  const isOnboarding = mode === "onboarding";
+export function RegistrationForm() {
   const registerIndustry = useDataStore((s) => s.registerIndustry);
-  const completeRegistration = useDataStore((s) => s.completeRegistration);
   const industries = useDataStore((s) => s.industries);
-  const industryId = useAuthStore((s) => s.industryId);
-  const login = useAuthStore((s) => s.login);
-  const signup = useAccountsStore((s) => s.signup);
   const [submitting, setSubmitting] = useState(false);
-  const [showPw, setShowPw] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
-  const ownUnit = useMemo(() => industries.find((i) => i.id === industryId), [industries, industryId]);
-
-  // Onboarding prefills from the operator's existing unit so completion is a review + confirm.
-  const defaults: Partial<FormValues> = isOnboarding && ownUnit
-    ? {
-        name: ownUnit.name,
-        ownerName: ownUnit.ownerName,
-        area: ownUnit.area,
-        address: ownUnit.address ?? "",
-        tehsil: ownUnit.tehsil ?? "",
-        district: ownUnit.district ?? "",
-        misId: ownUnit.misId ?? "",
-        mobile: ownUnit.mobile,
-        email: ownUnit.email,
-        consentOrderNo: ownUnit.consentOrderNo ?? ownUnit.consentNumber ?? "",
-        consentOrderDate: ownUnit.consentOrderDate ?? "",
-        consentValidFrom: ownUnit.consentValidFrom ?? "",
-        consentValidTo: ownUnit.consentValidTo ?? "",
-        hwmAuthNo: ownUnit.hwmAuthNo ?? "",
-        hwmAuthDate: ownUnit.hwmAuthDate ?? "",
-        hwmValidFrom: ownUnit.hwmValidFrom ?? "",
-        hwmValidTo: ownUnit.hwmValidTo ?? "",
-        authorisedSourceQuantity: ownUnit.authorisedSourceQuantity ?? undefined,
-        authorisedSourceUnit: ownUnit.authorisedSourceUnit ?? "MT",
-        tsdfName: ownUnit.tsdfName ?? "",
-        tsdfAddress: ownUnit.tsdfAddress ?? "",
-        signatoryName: ownUnit.signatoryName ?? ownUnit.ownerName,
-        signatoryDesignation: ownUnit.signatoryDesignation ?? "",
-        etpCapacity: ownUnit.etpCapacity,
-        maxEffluentGeneration: ownUnit.maxEffluentGeneration ?? ownUnit.permittedKLD,
-        roStage1: ownUnit.roStage1 ?? ownUnit.roCapacity,
-        roStage2: ownUnit.roStage2 ?? 0,
-        roStage3: ownUnit.roStage3 ?? 0,
-        roStage4: ownUnit.roStage4 ?? 0,
-        meeCapacity: ownUnit.meeCapacity,
-      }
-    : { authorisedSourceUnit: "MT" };
-
-  const resolver = zodResolver(isPublic ? publicSchema : adminSchema) as unknown as Resolver<FormValues>;
+  const resolver = zodResolver(adminSchema) as unknown as Resolver<FormValues>;
   const {
     register,
     handleSubmit,
     watch,
     setError,
     formState: { errors },
-  } = useForm<FormValues>({ resolver, defaultValues: defaults });
+  } = useForm<FormValues>({ resolver, defaultValues: { authorisedSourceUnit: "MT" } });
 
   const filtered = (key: "ownerName" | "area" | "mobile" | "tehsil" | "district", transform: (v: string) => string) => {
     const reg = register(key);
@@ -162,127 +103,60 @@ export function RegistrationForm({ mode }: { mode: RegistrationMode }) {
   const srcUnit = (watch("authorisedSourceUnit") as "KG" | "MT") ?? "MT";
   const kgPreview = srcQty > 0 ? toCanonicalKg(srcQty, srcUnit) : 0;
 
-  const pw = watch("password") ?? "";
-  const pwChecks = [
-    { label: "At least 8 characters", ok: pw.length >= 8 },
-    { label: "Contains a letter", ok: /[A-Za-z]/.test(pw) },
-    { label: "Contains a number", ok: /[0-9]/.test(pw) },
-    { label: "Contains a special character", ok: /[^A-Za-z0-9]/.test(pw) },
-  ];
-
-  // MIS ID must be unique across units (excluding the operator's own in onboarding).
-  const misIdTaken = (misId: string) =>
-    industries.some((i) => i.misId && i.misId.trim() === misId.trim() && i.id !== (isOnboarding ? industryId : undefined));
-
-  const buildInput = (v: z.infer<typeof adminSchema>) => ({
-    name: v.name,
-    ownerName: v.ownerName,
-    area: v.area,
-    address: v.address,
-    mobile: v.mobile,
-    email: v.email,
-    consentNumber: v.consentOrderNo,
-    permittedKLD: v.maxEffluentGeneration,
-    etpCapacity: v.etpCapacity,
-    roCapacity: v.roStage1,
-    meeCapacity: v.meeCapacity,
-    cetpId: null as null,
-    maxEffluentGeneration: v.maxEffluentGeneration,
-    roStage1: v.roStage1,
-    roStage2: v.roStage2,
-    roStage3: v.roStage3,
-    roStage4: v.roStage4,
-    misId: v.misId,
-    tehsil: v.tehsil,
-    district: v.district,
-    consentOrderNo: v.consentOrderNo,
-    consentOrderDate: v.consentOrderDate,
-    consentValidFrom: v.consentValidFrom,
-    consentValidTo: v.consentValidTo,
-    hwmAuthNo: v.hwmAuthNo,
-    hwmAuthDate: v.hwmAuthDate,
-    hwmValidFrom: v.hwmValidFrom,
-    hwmValidTo: v.hwmValidTo,
-    authorisedQuantityKg: toCanonicalKg(v.authorisedSourceQuantity, v.authorisedSourceUnit),
-    authorisedSourceQuantity: round1(v.authorisedSourceQuantity),
-    authorisedSourceUnit: v.authorisedSourceUnit,
-    tsdfName: v.tsdfName,
-    tsdfAddress: v.tsdfAddress,
-    signatoryName: v.signatoryName,
-    signatoryDesignation: v.signatoryDesignation,
-    registrationComplete: true,
-  });
+  // MIS ID must be unique across units.
+  const misIdTaken = (misId: string) => industries.some((i) => i.misId && i.misId.trim() === misId.trim());
 
   const onSubmit = handleSubmit(async (values) => {
-    const schema = isPublic ? publicSchema : adminSchema;
-    const v = schema.parse(values) as z.infer<typeof adminSchema>;
+    const v = adminSchema.parse(values);
     if (misIdTaken(v.misId)) {
       setError("misId", { message: "This MIS ID is already registered" });
       return;
     }
     setSubmitting(true);
-
-    // ---- Onboarding: complete the operator's OWN existing unit ----
-    if (isOnboarding) {
-      if (!industryId) {
-        toast.error("No unit linked to this session");
-        setSubmitting(false);
-        return;
-      }
-      completeRegistration(industryId, buildInput(v));
-      toast.success("Registration complete", { description: "Your ETP unit is ready — welcome to JalRakshak." });
-      setTimeout(() => {
-        window.location.href = "/dashboard";
-      }, 500);
-      return;
-    }
-
-    // ---- Admin: create the industry record only (no operator login) ----
-    if (!isPublic) {
-      const created = registerIndustry(buildInput(v));
-      toast.success("Industry registered", { description: `${created.name} added — pending verification.` });
-      setDone(created.name);
-      setSubmitting(false);
-      return;
-    }
-
-    // ---- Public: full self-registration (account + owned industry) ----
-    const pub = publicSchema.parse(values);
-    const acct = await signup({ name: pub.ownerName, email: pub.email, password: pub.password, role: "etp", industryId: null });
-    if (!acct.ok) {
-      toast.error("Registration failed", { description: acct.error });
-      setSubmitting(false);
-      return;
-    }
-    remoteApply.active = true;
-    try {
-      useDataStore.setState(emptyData());
-    } finally {
-      remoteApply.active = false;
-    }
-    const created = registerIndustry(buildInput(v));
-    try {
-      await writeOwnedIndustry(useDataStore.getState(), created.id, acct.user.id);
-    } catch {
-      // best-effort
-    }
-    try {
-      await setDoc(doc(db, "users", acct.user.id), { industryId: created.id }, { merge: true });
-    } catch {
-      // best-effort
-    }
-    syncContext.uid = acct.user.id;
-    syncContext.role = "etp";
-    syncContext.industryId = created.id;
-    syncContext.ready = true;
-    toast.success("ETP unit registered", { description: `${created.name} is now pending verification.` });
-    login("etp", created.id);
-    setTimeout(() => {
-      window.location.href = "/dashboard";
-    }, 600);
+    const created = registerIndustry({
+      name: v.name,
+      ownerName: v.ownerName,
+      area: v.area,
+      address: v.address,
+      mobile: v.mobile,
+      email: v.email,
+      consentNumber: v.consentOrderNo,
+      permittedKLD: v.maxEffluentGeneration,
+      etpCapacity: v.etpCapacity,
+      roCapacity: v.roStage1,
+      meeCapacity: v.meeCapacity,
+      cetpId: null,
+      maxEffluentGeneration: v.maxEffluentGeneration,
+      roStage1: v.roStage1,
+      roStage2: v.roStage2,
+      roStage3: v.roStage3,
+      roStage4: v.roStage4,
+      misId: v.misId,
+      tehsil: v.tehsil,
+      district: v.district,
+      consentOrderNo: v.consentOrderNo,
+      consentOrderDate: v.consentOrderDate,
+      consentValidFrom: v.consentValidFrom,
+      consentValidTo: v.consentValidTo,
+      hwmAuthNo: v.hwmAuthNo,
+      hwmAuthDate: v.hwmAuthDate,
+      hwmValidFrom: v.hwmValidFrom,
+      hwmValidTo: v.hwmValidTo,
+      authorisedQuantityKg: toCanonicalKg(v.authorisedSourceQuantity, v.authorisedSourceUnit),
+      authorisedSourceQuantity: round1(v.authorisedSourceQuantity),
+      authorisedSourceUnit: v.authorisedSourceUnit,
+      tsdfName: v.tsdfName,
+      tsdfAddress: v.tsdfAddress,
+      signatoryName: v.signatoryName,
+      signatoryDesignation: v.signatoryDesignation,
+      registrationComplete: true,
+    });
+    toast.success("Industry registered", { description: `${created.name} added — pending verification.` });
+    setDone(created.name);
+    setSubmitting(false);
   });
 
-  if (done && !isPublic && !isOnboarding) {
+  if (done) {
     return (
       <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-6 text-center">
         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500">
@@ -331,24 +205,6 @@ export function RegistrationForm({ mode }: { mode: RegistrationMode }) {
           <Field label="Email" error={errors.email?.message}>
             <input {...register("email")} className={inputCls} placeholder="plant@company.in" />
           </Field>
-          {isPublic && (
-            <Field label="Login Password">
-              <div className="relative">
-                <input type={showPw ? "text" : "password"} {...register("password")} className={inputCls + " pr-10"} placeholder="Set a password to sign in later" />
-                <button type="button" tabIndex={-1} onClick={() => setShowPw((x) => !x)} className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600" aria-label={showPw ? "Hide password" : "Show password"}>
-                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
-              <ul className="mt-2 space-y-1">
-                {pwChecks.map((c) => (
-                  <li key={c.label} className={cn("flex items-center gap-1.5 text-xs", c.ok ? "text-emerald-600" : "text-slate-400")}>
-                    {c.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <Circle className="h-3.5 w-3.5 shrink-0" />}
-                    {c.label}
-                  </li>
-                ))}
-              </ul>
-            </Field>
-          )}
         </div>
       </Section>
 
@@ -452,7 +308,7 @@ export function RegistrationForm({ mode }: { mode: RegistrationMode }) {
         className="h-12 w-full gap-2 rounded-xl bg-gradient-to-r from-teal-600 to-cyan-600 text-base font-semibold text-white hover:from-teal-600/90 hover:to-cyan-600/90"
       >
         <Check className="h-4 w-4" />
-        {submitting ? "Saving…" : isOnboarding ? "Complete Registration & Enter" : isPublic ? "Register & Enter ETP Panel" : "Register Industry"}
+        {submitting ? "Registering…" : "Register Industry"}
       </Button>
     </form>
   );

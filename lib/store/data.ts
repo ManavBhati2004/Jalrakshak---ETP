@@ -123,7 +123,6 @@ interface DataState {
   sendDisciplinaryAlert: (industryId: string, message: string, severity: AlertSeverity) => void;
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
-  completeRegistration: (industryId: string, patch: Partial<RegisterInput>) => void;
   setMonthlyProduction: (industryId: string, month: string, meters: number) => void;
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
@@ -611,56 +610,6 @@ export const useDataStore = create<DataState>()(
           ],
         }));
         return industry;
-      },
-
-      // Onboarding gate: fill the RSPCB registration fields on an EXISTING unit and stamp
-      // completion so the operator's dashboard/daily-entry unlocks.
-      completeRegistration: (industryId, patch) => {
-        set((s) => ({
-          industries: s.industries.map((i) =>
-            i.id === industryId
-              ? {
-                  ...i,
-                  name: patch.name ?? i.name,
-                  ownerName: patch.ownerName ?? i.ownerName,
-                  contactPerson: patch.ownerName ?? i.contactPerson,
-                  area: patch.area ?? i.area,
-                  address: patch.address ?? i.address,
-                  mobile: patch.mobile ?? i.mobile,
-                  email: patch.email ?? i.email,
-                  consentNumber: patch.consentNumber ?? i.consentNumber,
-                  permittedKLD: patch.permittedKLD ?? i.permittedKLD,
-                  etpCapacity: patch.etpCapacity ?? i.etpCapacity,
-                  roCapacity: patch.roCapacity ?? i.roCapacity,
-                  meeCapacity: patch.meeCapacity ?? i.meeCapacity,
-                  maxEffluentGeneration: patch.maxEffluentGeneration ?? i.maxEffluentGeneration,
-                  roStage1: patch.roStage1 ?? i.roStage1,
-                  roStage2: patch.roStage2 ?? i.roStage2,
-                  roStage3: patch.roStage3 ?? i.roStage3,
-                  roStage4: patch.roStage4 ?? i.roStage4,
-                  misId: patch.misId ?? i.misId,
-                  tehsil: patch.tehsil ?? i.tehsil,
-                  district: patch.district ?? i.district,
-                  consentOrderNo: patch.consentOrderNo ?? i.consentOrderNo,
-                  consentOrderDate: patch.consentOrderDate ?? i.consentOrderDate,
-                  consentValidFrom: patch.consentValidFrom ?? i.consentValidFrom,
-                  consentValidTo: patch.consentValidTo ?? i.consentValidTo,
-                  hwmAuthNo: patch.hwmAuthNo ?? i.hwmAuthNo,
-                  hwmAuthDate: patch.hwmAuthDate ?? i.hwmAuthDate,
-                  hwmValidFrom: patch.hwmValidFrom ?? i.hwmValidFrom,
-                  hwmValidTo: patch.hwmValidTo ?? i.hwmValidTo,
-                  authorisedQuantityKg: patch.authorisedQuantityKg ?? i.authorisedQuantityKg,
-                  authorisedSourceQuantity: patch.authorisedSourceQuantity ?? i.authorisedSourceQuantity,
-                  authorisedSourceUnit: patch.authorisedSourceUnit ?? i.authorisedSourceUnit,
-                  tsdfName: patch.tsdfName ?? i.tsdfName,
-                  tsdfAddress: patch.tsdfAddress ?? i.tsdfAddress,
-                  signatoryName: patch.signatoryName ?? i.signatoryName,
-                  signatoryDesignation: patch.signatoryDesignation ?? i.signatoryDesignation,
-                  registrationCompletedAt: new Date().toISOString(),
-                }
-              : i,
-          ),
-        }));
       },
 
       // Monthly compliance manual field: cloths production (meters) per unit/month.

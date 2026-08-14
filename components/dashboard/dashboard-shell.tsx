@@ -8,16 +8,13 @@ import { Topbar } from "./topbar";
 import { JalRakshakLogo } from "@/components/shared/logo";
 import { useUIStore } from "@/lib/store/ui";
 import { useAuthStore } from "@/lib/store/auth";
-import { useDataStore } from "@/lib/store/data";
 import { canAccessPath } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const collapsed = useUIStore((s) => s.sidebarCollapsed);
   const role = useAuthStore((s) => s.role);
-  const industryId = useAuthStore((s) => s.industryId);
   const authReady = useAuthStore((s) => s.authReady);
-  const industries = useDataStore((s) => s.industries);
   const router = useRouter();
   const pathname = usePathname();
 
@@ -27,26 +24,11 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
-    // First-time registration gate: an ETP operator whose unit hasn't completed the
-    // five-section RSPCB registration is redirected to onboarding and blocked from the
-    // operational dashboard until complete. (Fires only once the unit doc is loaded.)
-    if (role === "etp" && industryId) {
-      const own = industries.find((i) => i.id === industryId);
-      const onOnboarding = pathname === "/dashboard/onboarding";
-      if (own && !own.registrationCompletedAt && !onOnboarding) {
-        router.replace("/dashboard/onboarding");
-        return;
-      }
-      if (own && own.registrationCompletedAt && onOnboarding) {
-        router.replace("/dashboard");
-        return;
-      }
-    }
     // each role may only reach the routes it owns
     if (!canAccessPath(role, pathname)) {
       router.replace("/dashboard");
     }
-  }, [authReady, role, industryId, industries, router, pathname]);
+  }, [authReady, role, router, pathname]);
 
   if (!authReady || !role) {
     return (

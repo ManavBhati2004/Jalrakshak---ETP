@@ -64,7 +64,7 @@ export const ADMIN_ONLY_PATHS = [
   "/dashboard/compliance",
   "/dashboard/reports",
 ];
-export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help", "/dashboard/onboarding"];
+export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help"];
 
 /** Whether a role may visit a dashboard path (used for redirect gating). */
 export function canAccessPath(role: RoleId, pathname: string): boolean {

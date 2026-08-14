@@ -25,7 +25,7 @@ export default function RegisterMemberPage() {
             <span className="font-semibold text-amber-500">pending</span> status.
           </span>
         </div>
-        <RegistrationForm mode="admin" />
+        <RegistrationForm />
       </div>
     </div>
   );
