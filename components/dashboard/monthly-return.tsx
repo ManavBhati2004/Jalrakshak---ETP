@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import type { Industry } from "@/lib/types";
 import { buildMonthlyCompliance, monthEntries } from "@/lib/data/monthly";
 import { downloadMonthlyWorkbook } from "@/lib/data/excel-export";
+import { kgToMt } from "@/lib/data/etp-calc";
 import { MonthlyPrintSheets } from "@/components/dashboard/monthly-print-sheets";
 import { formatNumber } from "@/lib/utils";
 
-const mt = (kg: number) => `${formatNumber(Math.round((kg / 1000) * 1000) / 1000)} MT`;
+const mt = (kg: number) => `${formatNumber(kgToMt(kg))} MT`;
 
 export function MonthlyReturn({ industry }: { industry: Industry }) {
   const entries = useDataStore((s) => s.etpEntries);
@@ -68,7 +69,7 @@ export function MonthlyReturn({ industry }: { industry: Industry }) {
           <div>
             <label className="mb-1.5 block text-xs font-medium text-muted-foreground">Cloths Production – in meters (manual)</label>
             <div className="flex gap-2">
-              <input inputMode="numeric" value={clothsInput} onChange={(e) => setClothsInput(e.target.value.replace(/[^0-9]/g, ""))} className={inputCls} placeholder="e.g. 1047593" />
+              <input inputMode="numeric" maxLength={9} value={clothsInput} onChange={(e) => setClothsInput(e.target.value.replace(/[^0-9]/g, "").slice(0, 9))} className={inputCls} placeholder="e.g. 1047593" />
               <Button variant="outline" onClick={saveCloths} className="h-10 gap-1.5 rounded-xl"><Save className="h-4 w-4" /> Save</Button>
             </div>
           </div>
@@ -114,7 +115,7 @@ export function MonthlyReturn({ industry }: { industry: Industry }) {
                     <th className="border-b border-border pb-1.5 pr-3">Date</th>
                     <th className="border-b border-border pb-1.5 pr-3">Manifest No.</th>
                     <th className="border-b border-border pb-1.5 pr-3">Type of waste</th>
-                    <th className="border-b border-border pb-1.5">Quantity</th>
+                    <th className="border-b border-border pb-1.5">Quantity (MT)</th>
                   </tr>
                 </thead>
                 <tbody>

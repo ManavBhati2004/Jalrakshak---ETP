@@ -23,7 +23,10 @@ export default function IndividualEtpPage() {
 
   const latestByIndustry = useMemo(() => {
     const map: Record<string, EtpEntry | undefined> = {};
-    for (const e of [...etpEntries].sort((a, b) => a.submittedAt.localeCompare(b.submittedAt))) {
+    // Only submitted (non-draft, non-rejected) entries — a draft must not appear as "latest".
+    for (const e of [...etpEntries]
+      .filter((e) => e.entryStatus !== "DRAFT" && e.status !== "rejected")
+      .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt))) {
       map[e.industryId] = e; // last write wins → latest
     }
     return map;
@@ -126,7 +129,7 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
     { accessorKey: "roInlet", header: "RO Inlet", cell: ({ row }) => <NumCell v={row.original.roInlet} /> },
     { accessorKey: "roReject", header: "RO Reject", cell: ({ row }) => <NumCell v={row.original.roReject} /> },
     { accessorKey: "roPermeate", header: "RO Permeate", cell: ({ row }) => <NumCell v={row.original.roPermeate} /> },
-    { accessorKey: "sludgeToTSDF", header: "Sludge→TSDF", cell: ({ row }) => <NumCell v={row.original.sludgeToTSDF} /> },
+    { id: "sludgeDispatch", header: "Sludge Disp. (kg)", cell: ({ row }) => <NumCell v={row.original.sludge?.dispatch ?? 0} /> },
     {
       accessorKey: "totalWaterIntake",
       header: "Total Intake",
@@ -150,7 +153,8 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
       "RO Inlet (m³)": e.roInlet,
       "RO Reject (m³)": e.roReject,
       "RO Permeate (m³)": e.roPermeate,
-      "Sludge to TSDF (m³)": e.sludgeToTSDF,
+      "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
+      "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,
@@ -208,7 +212,7 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
             <Mini label="Total Intake" value={latest?.totalWaterIntake} accent="#0d9488" />
             <Mini label="ETP Reuse" value={latest?.etpReuse} accent="#10b981" />
             <Mini label="RO Permeate" value={latest?.roPermeate} accent="#6366f1" />
-            <Mini label="Sludge→TSDF" value={latest?.sludgeToTSDF} accent="#a78bfa" />
+            <Mini label="Sludge Disp. (kg)" value={latest?.sludge?.dispatch} accent="#a78bfa" />
           </div>
         </div>
 

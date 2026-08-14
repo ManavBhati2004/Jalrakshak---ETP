@@ -2,7 +2,7 @@
 
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
-import { round1 } from "@/lib/data/etp-calc";
+import { round1, kgToMt } from "@/lib/data/etp-calc";
 import { daysInMonth } from "@/lib/data/monthly";
 import { formatNumber, formatDate } from "@/lib/utils";
 
@@ -20,7 +20,7 @@ const RO: Section[] = WATER_METERS.filter((m) => m.group === "ro").map((m) => ({
 const MEE: Section[] = WATER_METERS.filter((m) => m.group === "mee").map((m) => ({ label: m.label, code: m.code }));
 const ENERGY: Section[] = ENERGY_METERS.map((m) => ({ label: `${m.label} (${m.panel})`, code: m.code }));
 
-const mt = (kg: number) => formatNumber(round1(kg / 100) / 10);
+const mt = (kg: number) => formatNumber(kgToMt(kg));
 
 export function MonthlyPrintSheets({ industry, monthly, month }: { industry: Industry; monthly: EtpEntry[]; month: string }) {
   const days = daysInMonth(month);

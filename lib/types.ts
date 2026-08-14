@@ -158,6 +158,7 @@ export interface EtpEntry {
   sludge?: HwLedger; // ETP sludge (kg)
   salt?: HwLedger; // ATFD/PAN salt, MEE section (kg)
   entryStatus?: EntryStatus; // DRAFT | SUBMITTED (append-only submit workflow)
+  overrideReason?: string; // audit note when a missing-prior-day continuity override was authorised
 }
 
 export type ReadingShift = "morning" | "evening";

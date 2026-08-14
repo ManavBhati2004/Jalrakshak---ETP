@@ -30,8 +30,13 @@ export function EtpOverview() {
 
   const industry = industries.find((i) => i.id === industryId);
 
+  // Only SUBMITTED (non-draft, non-rejected) entries drive the dashboard — a partial/invalid
+  // draft must never appear as the "latest" reading or in the intake/balance figures.
   const mine = useMemo(
-    () => etpEntries.filter((e) => e.industryId === industryId).sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)),
+    () =>
+      etpEntries
+        .filter((e) => e.industryId === industryId && e.entryStatus !== "DRAFT" && e.status !== "rejected")
+        .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt)),
     [etpEntries, industryId],
   );
   const latest = mine[0];
@@ -65,7 +70,7 @@ export function EtpOverview() {
   const sludgeDispatchedKg = ledgerRollup(monthlyEntries, "sludge").disposalKg;
   const saltDispatchedKg = ledgerRollup(monthlyEntries, "salt").disposalKg;
   const energyKwh = useMemo(
-    () => round1(monthlyEntries.reduce((s, e) => s + Object.values(e.energy ?? {}).reduce((a, m) => a + (m?.total ?? 0), 0), 0)),
+    () => round1(monthlyEntries.reduce((s, e) => s + Object.values(e.energy ?? {}).reduce((a, m) => a + Number(m?.total ?? 0), 0), 0)),
     [monthlyEntries],
   );
 
@@ -96,7 +101,7 @@ export function EtpOverview() {
     { accessorKey: "roInlet", header: "RO Inlet", cell: ({ row }) => <Num v={row.original.roInlet} /> },
     { accessorKey: "roReject", header: "RO Reject", cell: ({ row }) => <Num v={row.original.roReject} /> },
     { accessorKey: "roPermeate", header: "RO Permeate", cell: ({ row }) => <Num v={row.original.roPermeate} /> },
-    { accessorKey: "sludgeToTSDF", header: "Sludge→TSDF", cell: ({ row }) => <Num v={row.original.sludgeToTSDF} /> },
+    { id: "sludgeDispatch", header: "Sludge Disp. (kg)", cell: ({ row }) => <Num v={row.original.sludge?.dispatch ?? 0} unit="kg" /> },
     {
       accessorKey: "totalWaterIntake",
       header: "Total Intake",
@@ -122,7 +127,7 @@ export function EtpOverview() {
       "RO Permeate (m³)": e.roPermeate,
       "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
       "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
-      "Energy (kWh)": e.energy ? round1(Object.values(e.energy).reduce((a, m) => a + (m?.total ?? 0), 0)) : "",
+      "Energy (kWh)": e.energy ? round1(Object.values(e.energy).reduce((a, m) => a + Number(m?.total ?? 0), 0)) : "",
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,
@@ -184,9 +189,9 @@ export function EtpOverview() {
 
       {/* total water intake + today-vs-yesterday + balance */}
       <div className="grid gap-4 lg:grid-cols-[1fr_1fr_2fr]">
-        <div className="rounded-2xl border border-border bg-card p-5">
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-5">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total Water Intake (latest)</p>
-          <p className="mt-2 font-mono text-4xl font-bold text-primary">
+          <p className="mt-2 truncate font-mono text-4xl font-bold tabular-nums text-primary">
             {latest ? formatNumber(latest.totalWaterIntake) : "—"} <span className="text-base font-medium text-muted-foreground">m³</span>
           </p>
           <p className="mt-1 text-xs text-muted-foreground">= Fresh Water + ETP Reuse + RO Permeate</p>
@@ -218,11 +223,11 @@ export function EtpOverview() {
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {balance.map((b) => (
-            <div key={b.label} className="rounded-2xl border border-border bg-card p-4">
+            <div key={b.label} className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-4">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: `${b.accent}1f`, color: b.accent }}>
                 {b.icon ? <b.icon className="h-4 w-4" /> : <Droplets className="h-4 w-4" />}
               </span>
-              <p className="mt-3 font-mono text-xl font-bold text-foreground sm:text-2xl">
+              <p className="mt-3 truncate font-mono text-xl font-bold tabular-nums text-foreground sm:text-2xl">
                 {b.value != null ? formatNumber(b.value) : "—"} <span className="text-xs font-medium text-muted-foreground">m³</span>
               </p>
               <p className="text-xs text-muted-foreground">{b.label}</p>
@@ -322,9 +327,9 @@ function Stat({ icon, label, value, accent }: { icon: React.ReactNode; label: st
 
 function MonthStat({ icon, label, value, accent }: { icon: React.ReactNode; label: string; value: string; accent: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-card p-4">
+    <div className="min-w-0 overflow-hidden rounded-2xl border border-border bg-card p-4">
       <span className="inline-flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: `${accent}1f`, color: accent }}>{icon}</span>
-      <p className="mt-3 font-mono text-xl font-bold text-foreground">{value}</p>
+      <p className="mt-3 truncate font-mono text-xl font-bold tabular-nums text-foreground">{value}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
     </div>
   );

@@ -6,7 +6,9 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function formatNumber(n: number, opts?: Intl.NumberFormatOptions) {
-  return new Intl.NumberFormat("en-IN", opts).format(n);
+  const x = Number(n);
+  if (!Number.isFinite(x)) return "—";
+  return new Intl.NumberFormat("en-IN", opts).format(x);
 }
 
 export function formatKLD(n: number) {

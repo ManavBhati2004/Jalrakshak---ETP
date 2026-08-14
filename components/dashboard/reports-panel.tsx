@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Download,
   CalendarDays,
@@ -16,8 +16,6 @@ import {
 import { toast } from "sonner";
 import { useDataStore } from "@/lib/store/data";
 import { toCSV, stampedName } from "@/lib/utils";
-
-const TODAY = "2026-06-20";
 
 function download(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/csv;charset=utf-8;" });
@@ -36,16 +34,41 @@ export function ReportsPanel() {
   const compliance = useDataStore((s) => s.compliance);
   const etpEntries = useDataStore((s) => s.etpEntries);
   const [busy, setBusy] = useState<string | null>(null);
+  const [today, setToday] = useState("");
+  useEffect(() => {
+    const n = new Date();
+    const p = (x: number) => String(x).padStart(2, "0");
+    setToday(`${n.getFullYear()}-${p(n.getMonth() + 1)}-${p(n.getDate())}`);
+  }, []);
+
+  // Strip nested objects so the CSV never emits "[object Object]".
+  const industryRow = ({ monthlyProduction, ...rest }: (typeof industries)[number]) => rest;
+  const etpRow = (e: (typeof etpEntries)[number]) => ({
+    Date: e.date,
+    Unit: e.industryName,
+    "Fresh Water (m³)": e.freshWaterConsumption,
+    "ETP Inlet (m³)": e.etpInlet,
+    "ETP Reuse (m³)": e.etpReuse,
+    "RO Inlet (m³)": e.roInlet,
+    "RO Reject (m³)": e.roReject,
+    "RO Permeate (m³)": e.roPermeate,
+    "Total Water Intake (m³)": e.totalWaterIntake,
+    "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
+    "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
+    Status: e.status,
+    Stage: e.entryStatus ?? "",
+    "Submitted At": e.submittedAt,
+  });
 
   const REPORTS = [
-    { key: "daily", title: "Daily", desc: "Today's readings", icon: CalendarDays, color: "#6366f1", count: readings.filter((r) => r.date === TODAY).length, build: () => readings.filter((r) => r.date === TODAY) },
+    { key: "daily", title: "Daily", desc: "Today's readings", icon: CalendarDays, color: "#6366f1", count: readings.filter((r) => r.date === today).length, build: () => readings.filter((r) => r.date === today) },
     { key: "monthly", title: "Monthly", desc: "Full logbook", icon: CalendarRange, color: "#8b5cf6", count: readings.length, build: () => readings },
-    { key: "industry", title: "Industry-Wise", desc: "Per-unit data", icon: Factory, color: "#0ea5e9", count: industries.length, build: () => industries },
+    { key: "industry", title: "Industry-Wise", desc: "Per-unit data", icon: Factory, color: "#0ea5e9", count: industries.length, build: () => industries.map(industryRow) },
     { key: "compliance", title: "Compliance", desc: "Scores & rates", icon: ShieldCheck, color: "#10b981", count: compliance.length, build: () => compliance.map(({ trend, ...rest }) => rest) },
     { key: "pending", title: "Pending", desc: "Awaiting review", icon: Clock, color: "#f59e0b", count: approvals.filter((a) => a.stage === "submitted" || a.stage === "verification").length, build: () => approvals.filter((a) => a.stage === "submitted" || a.stage === "verification").map(({ timeline, alerts, ...rest }) => rest) },
     { key: "rejected", title: "Rejected", desc: "Rejected log", icon: XCircle, color: "#ef4444", count: approvals.filter((a) => a.stage === "rejected").length, build: () => approvals.filter((a) => a.stage === "rejected").map(({ timeline, alerts, ...rest }) => rest) },
-    { key: "nonreporting", title: "Non-Reporting", desc: "Silent units", icon: WifiOff, color: "#fb923c", count: industries.filter((i) => i.status === "non-reporting").length, build: () => industries.filter((i) => i.status === "non-reporting") },
-    { key: "etp", title: "ETP Entries", desc: "Water-balance log", icon: Droplets, color: "#0d9488", count: etpEntries.length, build: () => etpEntries },
+    { key: "nonreporting", title: "Non-Reporting", desc: "Silent units", icon: WifiOff, color: "#fb923c", count: industries.filter((i) => i.status === "non-reporting").length, build: () => industries.filter((i) => i.status === "non-reporting").map(industryRow) },
+    { key: "etp", title: "ETP Entries", desc: "Water-balance log", icon: Droplets, color: "#0d9488", count: etpEntries.length, build: () => etpEntries.map(etpRow) },
   ];
 
   const handleExport = (r: (typeof REPORTS)[number]) => {

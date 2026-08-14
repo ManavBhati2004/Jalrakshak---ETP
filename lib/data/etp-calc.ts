@@ -12,9 +12,17 @@ import {
   AUTHORISED_QUANTITY_WARNING_PERCENT,
 } from "@/lib/constants";
 
-/** Round to one decimal place, guarding against binary FP drift (e.g. 0.1+0.2). */
+/** Round to one decimal place. Coerces to Number and guards non-finite input (a stringy
+ *  or NaN value returns 0 rather than propagating garbage), with symmetric FP-drift nudge. */
 export function round1(n: number): number {
-  return Math.round((n + Number.EPSILON) * 10) / 10;
+  const x = Number(n);
+  if (!Number.isFinite(x)) return 0;
+  return Math.round((x + (x < 0 ? -Number.EPSILON : Number.EPSILON)) * 10) / 10;
+}
+
+/** kg → MT at 3-dp (whole-kg resolution) — the single source of truth for all MT rendering. */
+export function kgToMt(kg: number): number {
+  return Math.round(Number(kg) || 0) / 1000;
 }
 
 /** Meter daily total = Final − Initial, one decimal. */
@@ -22,9 +30,9 @@ export function meterTotal(initial: number, final: number): number {
   return round1(final - initial);
 }
 
-/** Build a MeterReading from raw initial/final numbers. */
+/** Build a MeterReading from raw initial/final numbers (all rounded to 1 dp). */
 export function toMeterReading(initial: number, final: number): MeterReading {
-  return { initial, final, total: meterTotal(initial, final) };
+  return { initial: round1(initial), final: round1(final), total: meterTotal(initial, final) };
 }
 
 /** Row status for the entry UI: total + the two blocking conditions. */
@@ -46,14 +54,14 @@ export function groupGrandTotals(water: Record<string, MeterReading>): Record<st
   const totals: Record<string, number> = { daily: 0, ro: 0, mee: 0 };
   for (const def of WATER_METERS) {
     if (RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON && def.code === "RO_PERMEATE_COMMON") continue;
-    totals[def.group] = round1(totals[def.group] + (water[def.code]?.total ?? 0));
+    totals[def.group] = round1(totals[def.group] + Number(water[def.code]?.total ?? 0));
   }
   return totals;
 }
 
 /** Sum of every water meter total (master §5.5 — NOT a dedup KPI). */
 export function computeGrandTotal(water: Record<string, MeterReading>): number {
-  return round1(Object.values(water).reduce((s, m) => s + (m?.total ?? 0), 0));
+  return round1(Object.values(water).reduce((s, m) => s + Number(m?.total ?? 0), 0));
 }
 
 /** Hazardous-waste closing balance = Opening + Generation − Dispatch (one decimal). */
@@ -130,9 +138,11 @@ export interface CarryForward {
  * calendar day (never silently from an older non-consecutive day).
  */
 export function resolveCarryForward(entries: EtpEntry[], industryId: string, date: string): CarryForward {
-  const mine = entries.filter((e) => e.industryId === industryId && e.date < date);
+  // Only SUBMITTED/approved (non-draft, non-rejected) entries count as valid priors.
+  const valid = entries.filter((e) => e.industryId === industryId && e.entryStatus !== "DRAFT" && e.status !== "rejected");
+  const mine = valid.filter((e) => e.date < date);
   const priorDate = previousCalendarDay(date);
-  const priorDay = entries.find((e) => e.industryId === industryId && e.date === priorDate);
+  const priorDay = valid.find((e) => e.date === priorDate);
   return {
     priorDay,
     isFirstEver: mine.length === 0,
@@ -162,7 +172,7 @@ export function cumulativeDispatch(
           e.status !== "rejected" &&
           withinRange(e.date, from, to),
       )
-      .reduce((s, e) => s + (e[ledger]?.dispatch ?? 0), 0),
+      .reduce((s, e) => s + Number(e[ledger]?.dispatch ?? 0), 0),
   );
 }
 
@@ -184,7 +194,7 @@ export function authorisedQuantityWarning(
 /** Usage breakdown for the UI (used / authorised / remaining / percent). */
 export function authorisationUsage(cumulativeKg: number, authorisedKg?: number) {
   if (!authorisedKg || authorisedKg <= 0) {
-    return { configured: false, usedKg: cumulativeKg, authorisedKg: 0, remainingKg: 0, percent: 0 };
+    return { configured: false, usedKg: round1(cumulativeKg), authorisedKg: 0, remainingKg: 0, percent: 0 };
   }
   return {
     configured: true,

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  round1,
+  kgToMt,
   meterTotal,
   groupGrandTotals,
   closingBalance,
@@ -168,4 +170,57 @@ describe("cumulativeDispatch + warning", () => {
 describe("dateRangeValid", () => {
   it("from ≤ to is valid", () => expect(dateRangeValid("2026-01-01", "2026-12-31")).toBe(true));
   it("from > to is invalid", () => expect(dateRangeValid("2026-12-31", "2026-01-01")).toBe(false));
+});
+
+/* ---------------- Hardening: coercion, guards, MT, draft-exclusion ---------------- */
+describe("round1 — coerces & guards non-finite (no garbage propagation)", () => {
+  it("coerces numeric strings", () => expect(round1("125.44" as unknown as number)).toBe(125.4));
+  it("NaN → 0", () => expect(round1(NaN)).toBe(0));
+  it("Infinity → 0", () => expect(round1(Infinity)).toBe(0));
+  it("non-numeric string → 0", () => expect(round1("abc" as unknown as number)).toBe(0));
+});
+
+describe("kgToMt — single source of truth (3-dp MT)", () => {
+  it("15420 kg → 15.42 MT", () => expect(kgToMt(15420)).toBe(15.42));
+  it("1234.5 kg → 1.235 MT", () => expect(kgToMt(1234.5)).toBe(1.235));
+  it("0 / garbage → 0", () => expect(kgToMt(NaN)).toBe(0));
+});
+
+describe("reduces coerce stringy totals instead of concatenating", () => {
+  it("groupGrandTotals sums string totals numerically (500+20=520, not '050020')", () => {
+    const water = {
+      RAW_FRESH_WATER: { initial: 0, final: 500, total: "500" as unknown as number },
+      ETP_INLET_ALL_STREAMS: { initial: 0, final: 20, total: "20" as unknown as number },
+    };
+    expect(groupGrandTotals(water).daily).toBe(520);
+  });
+  it("cumulativeDispatch sums string dispatch numerically", () => {
+    const e: EtpEntry = {
+      id: "E-1", industryId: "IND-1", industryName: "X", date: "2026-08-10",
+      freshWaterConsumption: 0, etpInlet: 0, etpOutlet: 0, etpReuse: 0, roInlet: 0, roReject: 0, roPermeate: 0,
+      sludgeToTSDF: 0, totalWaterIntake: 0, unit: "KL", status: "approved", submittedAt: "x",
+      sludge: { opening: 0, generation: 0, dateOfDisposal: "", dispatch: "600" as unknown as number, manifestNo: "", closing: 0, remark: "" },
+      entryStatus: "SUBMITTED",
+    };
+    expect(cumulativeDispatch([e, { ...e, id: "E-2", sludge: { ...e.sludge!, dispatch: "700" as unknown as number } }], "IND-1", "sludge")).toBe(1300);
+  });
+});
+
+describe("resolveCarryForward — drafts/rejected are NOT valid priors", () => {
+  const draft = (date: string): EtpEntry => ({
+    id: `E-${date}`, industryId: "IND-1", industryName: "X", date,
+    freshWaterConsumption: 0, etpInlet: 0, etpOutlet: 0, etpReuse: 0, roInlet: 0, roReject: 0, roPermeate: 0,
+    sludgeToTSDF: 0, totalWaterIntake: 0, unit: "KL", status: "pending", submittedAt: "x",
+    water: { RAW_FRESH_WATER: { initial: 0, final: 5, total: 5 } }, entryStatus: "DRAFT",
+  });
+  it("a DRAFT yesterday does not satisfy continuity and is treated as no prior", () => {
+    const cf = resolveCarryForward([draft("2026-08-13")], "IND-1", "2026-08-14");
+    expect(cf.priorDay).toBeUndefined();
+    expect(cf.isFirstEver).toBe(true); // the only entry is a draft → still a baseline
+    expect(cf.missingPriorDay).toBe(false);
+  });
+  it("a SUBMITTED yesterday still carries", () => {
+    const cf = resolveCarryForward([{ ...draft("2026-08-13"), entryStatus: "SUBMITTED", status: "approved" }], "IND-1", "2026-08-14");
+    expect(cf.priorDay?.date).toBe("2026-08-13");
+  });
 });

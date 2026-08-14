@@ -32,7 +32,7 @@ export function monthEntries(entries: EtpEntry[], industryId: string, month: str
 
 /** Σ of daily Total values for one water meter code across the month (master §13.2/§13.3). */
 export function monthlyWaterTotal(monthly: EtpEntry[], code: string): number {
-  return round1(monthly.reduce((s, e) => s + (e.water?.[code]?.total ?? 0), 0));
+  return round1(monthly.reduce((s, e) => s + Number(e.water?.[code]?.total ?? 0), 0));
 }
 
 export interface LedgerRollup {
@@ -49,8 +49,8 @@ export function ledgerRollup(monthly: EtpEntry[], ledger: "sludge" | "salt"): Le
   const last = monthly[monthly.length - 1][ledger];
   return {
     openingKg: round1(first?.opening ?? 0),
-    generationKg: round1(monthly.reduce((s, e) => s + (e[ledger]?.generation ?? 0), 0)),
-    disposalKg: round1(monthly.reduce((s, e) => s + (e[ledger]?.dispatch ?? 0), 0)),
+    generationKg: round1(monthly.reduce((s, e) => s + Number(e[ledger]?.generation ?? 0), 0)),
+    disposalKg: round1(monthly.reduce((s, e) => s + Number(e[ledger]?.dispatch ?? 0), 0)),
     closingKg: round1(last?.closing ?? 0),
   };
 }

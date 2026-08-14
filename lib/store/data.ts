@@ -106,6 +106,7 @@ export interface EtpEntryInput {
   energyRemark: string;
   sludge: LedgerInput;
   salt: LedgerInput;
+  overrideReason?: string; // reason recorded when a missing-prior-day continuity override was authorised
 }
 
 interface DataState {
@@ -269,7 +270,7 @@ export const useDataStore = create<DataState>()(
         // Derive the retained legacy scalars from the water-meter totals (dashboards/CSV).
         const legacy = (key: string) => {
           const def = WATER_METERS.find((m) => m.legacyKey === key);
-          return def ? water[def.code]?.total ?? 0 : 0;
+          return def ? Number(water[def.code]?.total ?? 0) : 0;
         };
         const freshWaterConsumption = legacy("freshWaterConsumption");
         const etpInlet = legacy("etpInlet");
@@ -282,6 +283,11 @@ export const useDataStore = create<DataState>()(
         // One parent record per unit/date: reuse the id of any existing entry (draft → submit).
         const prior = get().etpEntries.find((e) => e.industryId === input.industryId && e.date === input.date);
         const id = prior?.id ?? `E-${Date.now().toString(36).toUpperCase()}`;
+
+        // Never silently downgrade an already-submitted entry back to a draft.
+        if (input.status === "DRAFT" && prior && prior.entryStatus === "SUBMITTED") {
+          return { entry: prior, alerts: [] };
+        }
 
         const entry: EtpEntry = {
           id,
@@ -308,6 +314,7 @@ export const useDataStore = create<DataState>()(
           sludge,
           salt,
           entryStatus: input.status,
+          overrideReason: input.overrideReason,
         };
 
         // Alerts + the Monitoring-Body approval are created only on SUBMIT (never on drafts).
@@ -362,13 +369,20 @@ export const useDataStore = create<DataState>()(
           const approvals = approval
             ? [approval, ...s.approvals.filter((a) => a.readingId !== id)]
             : s.approvals.filter((a) => a.readingId !== id);
+          // Drop this reading's prior alerts before adding the fresh ones (no duplicate/colliding
+          // ids or unbounded accumulation on re-submit).
+          const alerts = [...newAlerts, ...s.alerts.filter((a) => a.relatedReadingId !== id)];
           return {
             etpEntries,
             approvals,
-            alerts: [...newAlerts, ...s.alerts],
+            alerts,
             industries: s.industries.map((i) =>
-              i.id === input.industryId && isSubmit
-                ? { ...i, lastReadingAt: submittedAt, alertsCount: i.alertsCount + fired.length }
+              i.id === input.industryId
+                ? {
+                    ...i,
+                    lastReadingAt: isSubmit ? submittedAt : i.lastReadingAt,
+                    alertsCount: alerts.filter((a) => a.industryId === i.id && a.status === "active").length,
+                  }
                 : i,
             ),
           };
@@ -655,9 +669,11 @@ export interface DashboardMetrics {
  * calendar day changes. Missing days count as 0.
  */
 export function dailyIntake(entries: EtpEntry[], todayStr: string, yesterdayStr: string) {
-  const today = entries.find((e) => e.date === todayStr)?.totalWaterIntake ?? 0;
-  const yesterday = entries.find((e) => e.date === yesterdayStr)?.totalWaterIntake ?? 0;
-  return { today, yesterday, difference: today - yesterday };
+  // Only submitted (non-draft, non-rejected) entries count toward the intake figures.
+  const valid = entries.filter((e) => e.entryStatus !== "DRAFT" && e.status !== "rejected");
+  const today = Number(valid.find((e) => e.date === todayStr)?.totalWaterIntake ?? 0);
+  const yesterday = Number(valid.find((e) => e.date === yesterdayStr)?.totalWaterIntake ?? 0);
+  return { today, yesterday, difference: round1(today - yesterday) };
 }
 
 export function selectMetrics(s: DataState): DashboardMetrics {

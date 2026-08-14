@@ -19,6 +19,8 @@ import {
   resolveCarryForward,
   authorisationUsage,
   authorisedQuantityWarning,
+  parseDailyValue,
+  previousCalendarDay,
   round1,
 } from "@/lib/data/etp-calc";
 import type { EtpEntry, EntryStatus } from "@/lib/types";
@@ -95,22 +97,26 @@ export default function EtpEntryPage() {
   const lockInitials = !!priorDay?.water; // carried from an immediately-previous day → locked
   const carrySource = priorDay ?? mostRecentPrior;
 
-  // Prefill Initial readings / opening balances from the carry source.
+  // Prefill Initial readings / opening balances from the carry source. Prefilled initials go
+  // through numFilter so an oversized legacy reading can't seed an out-of-range value. Keyed on
+  // the stable carrySource reference (NOT the freshly-rebuilt `carry` object) so a same-day
+  // submit does not re-run this and wipe the operator's just-entered finals.
   useEffect(() => {
-    if (!carry) return;
+    if (!industryId || !today) return;
     if (carrySource?.water) {
-      setWater(Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: String(carrySource.water?.[m.code]?.final ?? 0), final: "" }])));
+      setWater(Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: numFilter(String(carrySource.water?.[m.code]?.final ?? 0)), final: "" }])));
     } else {
       setWater(emptyMeters(WATER_METERS));
     }
     if (carrySource?.energy) {
-      setEnergy(Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: String(carrySource.energy?.[m.code]?.final ?? 0), final: "" }])));
+      setEnergy(Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: numFilter(String(carrySource.energy?.[m.code]?.final ?? 0)), final: "" }])));
     } else {
       setEnergy(emptyMeters(ENERGY_METERS));
     }
     setSludge((s) => ({ ...s, opening: carrySource?.sludge?.closing ?? 0 }));
     setSalt((s) => ({ ...s, opening: carrySource?.salt?.closing ?? 0 }));
-  }, [carry, carrySource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [carrySource, industryId, today]);
 
   const setMeter = (which: "water" | "energy") => (code: string, field: "initial" | "final", value: string) => {
     const upd = (prev: Record<string, MeterState>) => ({ ...prev, [code]: { ...prev[code], [field]: numFilter(value) } });
@@ -143,14 +149,23 @@ export default function EtpEntryPage() {
   const missingPriorDay = !!carry?.missingPriorDay;
   const continuityBlocked = missingPriorDay && !(override && overrideReason.trim().length > 3);
 
-  const blocked =
-    anyBelowInitial ||
-    anyIncomplete ||
-    sludgeNeedsManifest ||
-    saltNeedsManifest ||
-    sludgeOverStock ||
-    saltOverStock ||
-    closingNegative;
+  // Hard numeric-standard gate (≤7 int digits, ≤1 decimal, ≥0, ≤9,999,999.9) — the real
+  // validator, applied to entered/prefilled values so garbage can never be persisted.
+  const rangeError = (s: string) => s.trim() !== "" && !!parseDailyValue(s).error;
+  const anyOutOfRange =
+    waterRows.some((r) => rangeError(water[r.code].initial) || rangeError(water[r.code].final)) ||
+    energyRows.some((r) => rangeError(energy[r.code].initial) || rangeError(energy[r.code].final)) ||
+    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
+
+  // Today's entry is already submitted → Save Draft would downgrade it; only allow a re-submit.
+  const todayEntry = industryId ? etpEntries.find((e) => e.industryId === industryId && e.date === today) : undefined;
+  const todaySubmitted = todayEntry?.entryStatus === "SUBMITTED";
+
+  // Structural problems block BOTH draft-save and submit; `anyIncomplete`/`finalsMissing`/
+  // continuity are submit-only (a draft may be partial).
+  const structuralBlocked =
+    anyBelowInitial || anyOutOfRange || sludgeNeedsManifest || saltNeedsManifest || sludgeOverStock || saltOverStock || closingNegative;
+  const blocked = structuralBlocked || anyIncomplete;
   const submitBlocked = blocked || finalsMissing || continuityBlocked;
 
   // Authorisation usage for ETP sludge (over the HWM validity window; drafts excluded).
@@ -184,10 +199,19 @@ export default function EtpEntryPage() {
     energyRemark,
     sludge: { opening: sludge.opening, generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
     salt: { opening: salt.opening, generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
+    overrideReason: missingPriorDay && override ? overrideReason.trim() : undefined,
   });
 
   const onSaveDraft = () => {
     if (!industryId) return;
+    if (todaySubmitted) {
+      toast.error("Today's entry is already submitted", { description: "Use Submit to file a correction instead of saving a draft." });
+      return;
+    }
+    if (structuralBlocked) {
+      toast.error("Fix the highlighted fields before saving a draft");
+      return;
+    }
     const { entry } = submitEtpEntry(buildInput("DRAFT"));
     toast.success("Draft saved", { description: "Your partial entry is saved. It is not sent for verification or counted in reports." });
     setSuccess({ entry, status: "DRAFT" });
@@ -255,7 +279,7 @@ export default function EtpEntryPage() {
             <FileWarning className="h-4 w-4" /> Missing previous day
           </p>
           <p className="mt-1 text-amber-700">
-            There is no entry for {today ? formatDate(prevDay(today)) : "yesterday"}. Create a zero-consumption entry for missed days with a remark, or authorise an override to submit anyway.
+            There is no entry for {today ? formatDate(previousCalendarDay(today)) : "yesterday"}. Create a zero-consumption entry for missed days with a remark, or authorise an override to submit anyway.
           </p>
           <label className="mt-3 flex items-center gap-2 text-xs font-medium text-amber-800">
             <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} /> Authorise continuity override (records a reason)
@@ -363,8 +387,8 @@ export default function EtpEntryPage() {
         )}
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <Button variant="outline" onClick={onSaveDraft} disabled={!today} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
-            <Save className="h-4 w-4" /> Save Draft
+          <Button variant="outline" onClick={onSaveDraft} disabled={!today || todaySubmitted || structuralBlocked} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
+            <Save className="h-4 w-4" /> {todaySubmitted ? "Already submitted" : "Save Draft"}
           </Button>
           <Button onClick={onSubmit} disabled={submitBlocked || !today} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
             <Send className="h-4 w-4" /> {submitBlocked ? "Fix the highlighted fields" : "Submit Daily Entry"}
@@ -390,13 +414,6 @@ export default function EtpEntryPage() {
       </div>
     </div>
   );
-}
-
-function prevDay(date: string) {
-  const [y, m, d] = date.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() - 1);
-  return dt.toISOString().slice(0, 10);
 }
 
 /* ---------------- meter table ---------------- */
