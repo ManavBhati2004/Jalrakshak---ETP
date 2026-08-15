@@ -4,13 +4,15 @@ import { useEffect, useMemo, useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus, Eye, Phone, Mail, FileText } from "lucide-react";
+import { Plus, Eye, EyeOff, Phone, Mail, FileText, KeyRound, CheckCircle2, Circle } from "lucide-react";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTable } from "@/components/dashboard/data-table";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useDataStore } from "@/lib/store/data";
+import { resetOperatorPassword } from "@/lib/store/accounts";
 import type { Industry } from "@/lib/types";
 import { formatNumber, formatDate, cn } from "@/lib/utils";
 import { STATUS_COLOR, complianceStatus } from "@/lib/constants";
@@ -241,6 +243,9 @@ function IndustryDialog({ industry, onClose }: { industry: Industry | null; onCl
               <span className="text-muted-foreground">Last reading</span>
               <span className="font-medium text-foreground">{formatDate(industry.lastReadingAt, true)}</span>
             </div>
+
+            <ResetPasswordSection email={industry.email} />
+
             <div className="flex items-center justify-between">
               <StatusBadge status={industry.status} />
               <Button asChild size="sm" className="rounded-lg">
@@ -251,5 +256,85 @@ function IndustryDialog({ industry, onClose }: { industry: Industry | null; onCl
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Admin-only reset of a unit's login password (reauth with the current password + set a new one). */
+function ResetPasswordSection({ email }: { email: string }) {
+  const [open, setOpen] = useState(false);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const checks = [
+    { label: "At least 8 characters", ok: next.length >= 8 },
+    { label: "Contains a letter", ok: /[A-Za-z]/.test(next) },
+    { label: "Contains a number", ok: /[0-9]/.test(next) },
+    { label: "Contains a special character", ok: /[^A-Za-z0-9]/.test(next) },
+  ];
+  const strong = checks.every((c) => c.ok);
+
+  const submit = async () => {
+    if (!current || !strong) return;
+    setBusy(true);
+    const res = await resetOperatorPassword({ email, currentPassword: current, newPassword: next });
+    setBusy(false);
+    if (!res.ok) {
+      toast.error("Password reset failed", { description: res.error });
+      return;
+    }
+    toast.success("Login password updated", { description: `New password set for ${email}.` });
+    setCurrent("");
+    setNext("");
+    setOpen(false);
+  };
+
+  return (
+    <div className="rounded-xl border border-border bg-muted/30 p-3">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between text-sm font-medium text-foreground">
+        <span className="flex items-center gap-2">
+          <KeyRound className="h-4 w-4 text-primary" /> Reset login password
+        </span>
+        <span className="text-xs text-muted-foreground">{open ? "Hide" : "Only the Monitoring Body can do this"}</span>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2.5">
+          <p className="text-xs text-muted-foreground">
+            Enter the unit&apos;s <span className="font-medium">current</span> password (the one you set) and a new one. This changes the login for <span className="font-medium">{email}</span>.
+          </p>
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            placeholder="Current password"
+            className="h-10 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:border-primary/50"
+          />
+          <div className="relative">
+            <input
+              type={showNew ? "text" : "password"}
+              value={next}
+              onChange={(e) => setNext(e.target.value)}
+              placeholder="New password"
+              className="h-10 w-full rounded-xl border border-border bg-background px-3 pr-10 text-sm outline-none focus:border-primary/50"
+            />
+            <button type="button" tabIndex={-1} onClick={() => setShowNew((s) => !s)} className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground" aria-label={showNew ? "Hide password" : "Show password"}>
+              {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <ul className="grid gap-1 sm:grid-cols-2">
+            {checks.map((c) => (
+              <li key={c.label} className={cn("flex items-center gap-1.5 text-xs", c.ok ? "text-emerald-600" : "text-muted-foreground")}>
+                {c.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <Circle className="h-3.5 w-3.5 shrink-0" />}
+                {c.label}
+              </li>
+            ))}
+          </ul>
+          <Button size="sm" onClick={submit} disabled={busy || !current || !strong} className="w-full rounded-lg">
+            {busy ? "Updating…" : "Update password"}
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }

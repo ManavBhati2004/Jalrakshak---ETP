@@ -4,12 +4,14 @@ import { useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Building2, Droplets, Check, FileText, Recycle, UserCheck } from "lucide-react";
+import { Building2, Droplets, Check, FileText, Recycle, UserCheck, Eye, EyeOff, CheckCircle2, Circle } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
+import { registerUnitWithLogin } from "@/lib/store/accounts";
+import { writeOwnedIndustry } from "@/lib/data/firestore-storage";
 import { toCanonicalKg, round1 } from "@/lib/data/etp-calc";
-import { formatNumber } from "@/lib/utils";
+import { cn, formatNumber } from "@/lib/utils";
 
 /**
  * Monitoring-Body (admin) registration form — the SOLE path to create/register an ETP unit.
@@ -36,6 +38,13 @@ const baseShape = {
   misId: z.string().min(1, "MIS ID is required"),
   mobile: z.string().regex(/^\d{10}$/, "Enter a 10-digit mobile number"),
   email: z.string().regex(/^\S+@\S+\.\S+$/, "Valid email required"),
+  // Login the Monitoring Body sets for this unit's operator.
+  password: z
+    .string()
+    .min(8, "At least 8 characters")
+    .regex(/[A-Za-z]/, "Add a letter")
+    .regex(/[0-9]/, "Add a number")
+    .regex(/[^A-Za-z0-9]/, "Add a special character"),
   // §3.2 Consent
   consentOrderNo: z.string().min(2, "Consent Order No. is required"),
   consentOrderDate: z.string().min(1, "Consent order date is required"),
@@ -76,6 +85,7 @@ export function RegistrationForm() {
   const registerIndustry = useDataStore((s) => s.registerIndustry);
   const industries = useDataStore((s) => s.industries);
   const [submitting, setSubmitting] = useState(false);
+  const [showPw, setShowPw] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
   const resolver = zodResolver(adminSchema) as unknown as Resolver<FormValues>;
@@ -106,6 +116,14 @@ export function RegistrationForm() {
   // MIS ID must be unique across units.
   const misIdTaken = (misId: string) => industries.some((i) => i.misId && i.misId.trim() === misId.trim());
 
+  const pw = watch("password") ?? "";
+  const pwChecks = [
+    { label: "At least 8 characters", ok: pw.length >= 8 },
+    { label: "Contains a letter", ok: /[A-Za-z]/.test(pw) },
+    { label: "Contains a number", ok: /[0-9]/.test(pw) },
+    { label: "Contains a special character", ok: /[^A-Za-z0-9]/.test(pw) },
+  ];
+
   const onSubmit = handleSubmit(async (values) => {
     const v = adminSchema.parse(values);
     if (misIdTaken(v.misId)) {
@@ -113,46 +131,62 @@ export function RegistrationForm() {
       return;
     }
     setSubmitting(true);
-    const created = registerIndustry({
-      name: v.name,
-      ownerName: v.ownerName,
-      area: v.area,
-      address: v.address,
-      mobile: v.mobile,
+    // Create the operator's login (secondary app → admin stays signed in), then the owned unit.
+    const res = await registerUnitWithLogin({
+      name: v.ownerName,
       email: v.email,
-      consentNumber: v.consentOrderNo,
-      permittedKLD: v.maxEffluentGeneration,
-      etpCapacity: v.etpCapacity,
-      roCapacity: v.roStage1,
-      meeCapacity: v.meeCapacity,
-      cetpId: null,
-      maxEffluentGeneration: v.maxEffluentGeneration,
-      roStage1: v.roStage1,
-      roStage2: v.roStage2,
-      roStage3: v.roStage3,
-      roStage4: v.roStage4,
-      misId: v.misId,
-      tehsil: v.tehsil,
-      district: v.district,
-      consentOrderNo: v.consentOrderNo,
-      consentOrderDate: v.consentOrderDate,
-      consentValidFrom: v.consentValidFrom,
-      consentValidTo: v.consentValidTo,
-      hwmAuthNo: v.hwmAuthNo,
-      hwmAuthDate: v.hwmAuthDate,
-      hwmValidFrom: v.hwmValidFrom,
-      hwmValidTo: v.hwmValidTo,
-      authorisedQuantityKg: toCanonicalKg(v.authorisedSourceQuantity, v.authorisedSourceUnit),
-      authorisedSourceQuantity: round1(v.authorisedSourceQuantity),
-      authorisedSourceUnit: v.authorisedSourceUnit,
-      tsdfName: v.tsdfName,
-      tsdfAddress: v.tsdfAddress,
-      signatoryName: v.signatoryName,
-      signatoryDesignation: v.signatoryDesignation,
-      registrationComplete: true,
+      password: v.password,
+      createIndustry: (ownerUid) => {
+        const created = registerIndustry({
+          name: v.name,
+          ownerName: v.ownerName,
+          area: v.area,
+          address: v.address,
+          mobile: v.mobile,
+          email: v.email,
+          consentNumber: v.consentOrderNo,
+          permittedKLD: v.maxEffluentGeneration,
+          etpCapacity: v.etpCapacity,
+          roCapacity: v.roStage1,
+          meeCapacity: v.meeCapacity,
+          cetpId: null,
+          maxEffluentGeneration: v.maxEffluentGeneration,
+          roStage1: v.roStage1,
+          roStage2: v.roStage2,
+          roStage3: v.roStage3,
+          roStage4: v.roStage4,
+          misId: v.misId,
+          tehsil: v.tehsil,
+          district: v.district,
+          consentOrderNo: v.consentOrderNo,
+          consentOrderDate: v.consentOrderDate,
+          consentValidFrom: v.consentValidFrom,
+          consentValidTo: v.consentValidTo,
+          hwmAuthNo: v.hwmAuthNo,
+          hwmAuthDate: v.hwmAuthDate,
+          hwmValidFrom: v.hwmValidFrom,
+          hwmValidTo: v.hwmValidTo,
+          authorisedQuantityKg: toCanonicalKg(v.authorisedSourceQuantity, v.authorisedSourceUnit),
+          authorisedSourceQuantity: round1(v.authorisedSourceQuantity),
+          authorisedSourceUnit: v.authorisedSourceUnit,
+          tsdfName: v.tsdfName,
+          tsdfAddress: v.tsdfAddress,
+          signatoryName: v.signatoryName,
+          signatoryDesignation: v.signatoryDesignation,
+          registrationComplete: true,
+        });
+        // Stamp ownerUid so the operator owns the doc (belt-and-suspenders alongside the profile link).
+        void writeOwnedIndustry(useDataStore.getState(), created.id, ownerUid);
+        return created;
+      },
     });
-    toast.success("Industry registered", { description: `${created.name} added — pending verification.` });
-    setDone(created.name);
+    if (!res.ok) {
+      toast.error("Registration failed", { description: res.error });
+      setSubmitting(false);
+      return;
+    }
+    toast.success("Industry registered", { description: `${res.created.name} added — login created — pending verification.` });
+    setDone(res.created.name);
     setSubmitting(false);
   });
 
@@ -202,9 +236,39 @@ export function RegistrationForm() {
           <Field label="Mobile" error={errors.mobile?.message}>
             <input {...filtered("mobile", digitsOnly)} inputMode="numeric" maxLength={10} className={inputCls} placeholder="10-digit mobile number" />
           </Field>
-          <Field label="Email" error={errors.email?.message}>
+          <Field label="Email (unit login)" error={errors.email?.message}>
             <input {...register("email")} className={inputCls} placeholder="plant@company.in" />
           </Field>
+          <div className="sm:col-span-2">
+            <Field label="Login Password (set for the unit)" error={errors.password?.message}>
+              <div className="relative">
+                <input
+                  type={showPw ? "text" : "password"}
+                  {...register("password")}
+                  className={inputCls + " pr-10"}
+                  placeholder="Set an initial password — share it with the unit"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPw((s) => !s)}
+                  className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-600"
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                >
+                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+                {pwChecks.map((c) => (
+                  <li key={c.label} className={cn("flex items-center gap-1.5 text-xs", c.ok ? "text-emerald-600" : "text-slate-400")}>
+                    {c.ok ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <Circle className="h-3.5 w-3.5 shrink-0" />}
+                    {c.label}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-xs text-slate-500">The operator signs in with this email + password. You can reset it later from the unit's page.</p>
+            </Field>
+          </div>
         </div>
       </Section>
 

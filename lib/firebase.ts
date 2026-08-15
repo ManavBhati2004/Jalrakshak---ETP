@@ -8,7 +8,7 @@ import { getFirestore, type Firestore } from "firebase/firestore";
 // public web config so the deployed app works even without env vars set on the
 // host. Firebase web config is public by design — access is enforced by
 // Firebase Auth + Firestore security rules, not by keeping these secret.
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyD_i_Oh4PBefiWqA11fXInGMnod09SxYO4",
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "jalrakshak-etp.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "jalrakshak-etp",
