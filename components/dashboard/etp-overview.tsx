@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/lib/store/auth";
 import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
-import { monthEntries, ledgerRollup } from "@/lib/data/monthly";
+import { monthEntries, ledgerRollup, monthlyWaterTotal } from "@/lib/data/monthly";
 import { round1 } from "@/lib/data/etp-calc";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
 import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
@@ -69,6 +69,9 @@ export function EtpOverview() {
   );
   const sludgeDispatchedKg = ledgerRollup(monthlyEntries, "sludge").disposalKg;
   const saltDispatchedKg = ledgerRollup(monthlyEntries, "salt").disposalKg;
+  const meeFeedM3 = monthlyWaterTotal(monthlyEntries, "MEE_FEED");
+  const meeCondensateM3 = monthlyWaterTotal(monthlyEntries, "MEE_CONDENSATE");
+  const meeRejectM3 = monthlyWaterTotal(monthlyEntries, "MEE_REJECT");
   const energyKwh = useMemo(
     () => round1(monthlyEntries.reduce((s, e) => s + Object.values(e.energy ?? {}).reduce((a, m) => a + Number(m?.total ?? 0), 0), 0)),
     [monthlyEntries],
@@ -111,6 +114,19 @@ export function EtpOverview() {
         </span>
       ),
     },
+    // Operator-defined columns are appended AFTER every built-in data column. Entries recorded
+    // before a column existed have no stored value and render blank - never a fabricated 0.
+    ...(industry.customColumns ?? [])
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map((c): ColumnDef<EtpEntry> => ({
+        id: `custom-${c.id}`,
+        header: c.name,
+        cell: ({ row }) => {
+          const v = row.original.custom?.[c.id];
+          return v == null ? <span className="text-sm text-muted-foreground">—</span> : <Num v={Number(v)} />;
+        },
+      })),
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
   ];
 
@@ -179,6 +195,9 @@ export function EtpOverview() {
         <MonthStat icon={<Trash2 className="h-4 w-4" />} label="Sludge dispatched · this month" value={`${formatNumber(sludgeDispatchedKg)} kg`} accent="#a78bfa" />
         <MonthStat icon={<Trash2 className="h-4 w-4" />} label="MEE salt dispatched · this month" value={`${formatNumber(saltDispatchedKg)} kg`} accent="#f472b6" />
         <MonthStat icon={<Zap className="h-4 w-4" />} label="Energy · this month" value={`${formatNumber(energyKwh)} kWh`} accent="#f59e0b" />
+        <MonthStat icon={<Waves className="h-4 w-4" />} label="MEE FEED" value={`${formatNumber(meeFeedM3)} m³`} accent="#0ea5e9" />
+        <MonthStat icon={<Droplets className="h-4 w-4" />} label="MEE CONDENSATE" value={`${formatNumber(meeCondensateM3)} m³`} accent="#10b981" />
+        <MonthStat icon={<Waves className="h-4 w-4" />} label="MEE REJECT" value={`${formatNumber(meeRejectM3)} m³`} accent="#6366f1" />
         <Link href="/dashboard/monthly-return" className="flex flex-col justify-center rounded-2xl border border-primary/40 bg-primary/5 p-4 transition-colors hover:bg-primary/10">
           <span className="text-xs font-semibold uppercase tracking-wide text-primary">RSPCB Monthly Return</span>
           <span className="mt-1 flex items-center gap-1 text-sm font-medium text-foreground">

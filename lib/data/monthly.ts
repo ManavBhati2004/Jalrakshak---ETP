@@ -35,6 +35,19 @@ export function monthlyWaterTotal(monthly: EtpEntry[], code: string): number {
   return round1(monthly.reduce((s, e) => s + Number(e.water?.[code]?.total ?? 0), 0));
 }
 
+/**
+ * The four meters that make up TRADE EFFLUENT RECYCLED (and RECYCLE WATER — the client
+ * confirmed they are the same measure): ETP Direct Reuse + RO Permeate (1st & 2nd Stage)
+ * + RO Permeate (3rd & 4th Stage) + MEE Condensate Water. Keyed by stable meter CODE, never
+ * by visible label, so relabelling a meter can never silently change the formula.
+ */
+export const TRADE_EFFLUENT_RECYCLED_CODES = ["ETP_DIRECT_REUSE", "RO_PERMEATE_COMMON", "RO_PERMEATE_3_4", "MEE_CONDENSATE"] as const;
+
+/** Sigma of daily Totals across several water meters. Rounded once at the end - components are never pre-rounded. */
+export function monthlyWaterTotalOf(monthly: EtpEntry[], codes: readonly string[]): number {
+  return round1(monthly.reduce((s, e) => s + codes.reduce((t, c) => t + Number(e.water?.[c]?.total ?? 0), 0), 0));
+}
+
 export interface LedgerRollup {
   openingKg: number; // opening balance on the first entry of the month
   generationKg: number; // Σ generation
@@ -78,6 +91,15 @@ export interface MonthlyCompliance {
   clothsProductionMeters: number;
   rawFreshWaterM3: number; // Σ RAW_FRESH_WATER daily totals
   rawInfluentM3: number; // Σ ETP_INLET_ALL_STREAMS daily totals
+  /** Σ "ETP Inlet Section - Total of All Stream" for the month (one field label, NOT a subtraction). */
+  tradeEffluentGenerationM3: number;
+  /** ETP Direct Reuse + RO Permeate 1&2 + RO Permeate 3&4 + MEE Condensate. */
+  tradeEffluentRecycledM3: number;
+  /** RECYCLE WATER — same measure as tradeEffluentRecycledM3 (client-confirmed equivalence). */
+  recycleWaterM3: number;
+  meeFeedM3: number;
+  meeCondensateM3: number;
+  meeRejectM3: number;
   sludge: LedgerRollup;
   salt: LedgerRollup;
   manifests: ManifestRow[];
@@ -86,13 +108,23 @@ export interface MonthlyCompliance {
 /** Full monthly compliance summary for a unit (master §13). */
 export function buildMonthlyCompliance(entries: EtpEntry[], industryId: string, month: string, clothsProductionMeters: number): MonthlyCompliance {
   const monthly = monthEntries(entries, industryId, month);
+  // "ETP Inlet Section - Total of All Stream" is ONE field label, not a subtraction. Trade Effluent
+  // Generation is its monthly sum, which is the same figure as rawInfluentM3 - computed once, reused.
+  const etpInletTotalM3 = monthlyWaterTotal(monthly, "ETP_INLET_ALL_STREAMS");
+  const recycledM3 = monthlyWaterTotalOf(monthly, TRADE_EFFLUENT_RECYCLED_CODES);
   return {
     month,
     daysReported: monthly.length,
     daysInMonth: daysInMonth(month),
     clothsProductionMeters,
     rawFreshWaterM3: monthlyWaterTotal(monthly, "RAW_FRESH_WATER"),
-    rawInfluentM3: monthlyWaterTotal(monthly, "ETP_INLET_ALL_STREAMS"),
+    rawInfluentM3: etpInletTotalM3,
+    tradeEffluentGenerationM3: etpInletTotalM3,
+    tradeEffluentRecycledM3: recycledM3,
+    recycleWaterM3: recycledM3,
+    meeFeedM3: monthlyWaterTotal(monthly, "MEE_FEED"),
+    meeCondensateM3: monthlyWaterTotal(monthly, "MEE_CONDENSATE"),
+    meeRejectM3: monthlyWaterTotal(monthly, "MEE_REJECT"),
     sludge: ledgerRollup(monthly, "sludge"),
     salt: ledgerRollup(monthly, "salt"),
     manifests: manifestRows(monthly),

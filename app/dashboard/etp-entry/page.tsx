@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, Check, Send, Droplets, Zap, Trash2, Lock, TriangleAlert, Ban, Save, FileWarning } from "lucide-react";
+import { Calculator, Check, Send, Droplets, Zap, Trash2, Lock, TriangleAlert, Ban, Save, FileWarning, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
@@ -61,6 +61,7 @@ export default function EtpEntryPage() {
   const industries = useDataStore((s) => s.industries);
   const etpEntries = useDataStore((s) => s.etpEntries);
   const submitEtpEntry = useDataStore((s) => s.submitEtpEntry);
+  const addCustomColumn = useDataStore((s) => s.addCustomColumn);
   const raiseTamperAlert = useDataStore((s) => s.raiseTamperAlert);
   const industry = industries.find((i) => i.id === industryId);
 
@@ -69,6 +70,12 @@ export default function EtpEntryPage() {
   const [waterRemark, setWaterRemark] = useState("");
   const [energy, setEnergy] = useState<Record<string, MeterState>>(() => emptyMeters(ENERGY_METERS));
   const [energyRemark, setEnergyRemark] = useState("");
+  // Operator-defined extra columns. Definitions live on this unit's Industry record, so they
+  // are tenant-scoped: a column added here can never surface on another unit's sheet.
+  const customColumns = useMemo(() => [...(industry?.customColumns ?? [])].sort((a, b) => a.order - b.order), [industry?.customColumns]);
+  const [custom, setCustom] = useState<Record<string, string>>({});
+  const [showAddColumn, setShowAddColumn] = useState(false);
+  const [newColumnName, setNewColumnName] = useState("");
   const [sludge, setSludge] = useState<LedgerState>(emptyLedger);
   const [salt, setSalt] = useState<LedgerState>(emptyLedger);
   const [override, setOverride] = useState(false);
@@ -161,6 +168,30 @@ export default function EtpEntryPage() {
   const todayEntry = industryId ? etpEntries.find((e) => e.industryId === industryId && e.date === today) : undefined;
   const todaySubmitted = todayEntry?.entryStatus === "SUBMITTED";
 
+  /**
+   * Displayed value for a custom column: the operator's in-progress edit if there is one,
+   * otherwise today's saved value. A column with nothing stored stays BLANK - never 0 - so
+   * entries recorded before the column existed remain valid and are never back-filled.
+   */
+  const customValue = (id: string) => {
+    const edited = custom[id];
+    if (edited !== undefined) return edited;
+    const saved = todayEntry?.custom?.[id];
+    return saved == null ? "" : String(saved);
+  };
+
+  const onAddColumn = () => {
+    if (!industryId) return;
+    const res = addCustomColumn(industryId, newColumnName);
+    if (!res.ok) {
+      toast.error(res.error);
+      return;
+    }
+    setNewColumnName("");
+    setShowAddColumn(false);
+    toast.success("Column added", { description: res.column.name });
+  };
+
   // Structural problems block BOTH draft-save and submit; `anyIncomplete`/`finalsMissing`/
   // continuity are submit-only (a draft may be partial).
   const structuralBlocked =
@@ -199,6 +230,9 @@ export default function EtpEntryPage() {
     energyRemark,
     sludge: { opening: sludge.opening, generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
     salt: { opening: salt.opening, generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
+    custom: customColumns.length
+      ? Object.fromEntries(customColumns.map((c) => [c.id, customValue(c.id).trim() ? num(customValue(c.id)) : null]))
+      : undefined,
     overrideReason: missingPriorDay && override ? overrideReason.trim() : undefined,
   });
 
@@ -323,7 +357,7 @@ export default function EtpEntryPage() {
           <MeterTable
             caption="Energy panels"
             unit="Kwh"
-            meters={ENERGY_METERS.map((m) => ({ code: m.code, label: `${m.label} · ${m.panel}` }))}
+            meters={ENERGY_METERS.map((m) => ({ code: m.code, label: m.label }))}
             state={energy}
             rows={energyRows}
             onChange={setMeter("energy")}
@@ -352,6 +386,79 @@ export default function EtpEntryPage() {
             </p>
           </div>
         ) : null}
+      </div>
+
+      {/* CUSTOM COLUMNS — operator-defined, appended AFTER every built-in section */}
+      <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionTitle icon={<Plus className="h-4 w-4" />}>Custom Columns</SectionTitle>
+          <Button variant="outline" onClick={() => setShowAddColumn((v) => !v)} className="h-9 gap-1.5 rounded-xl">
+            <Plus className="h-4 w-4" /> Add Column
+          </Button>
+        </div>
+
+        {showAddColumn ? (
+          <div className="mt-3 flex flex-col gap-2 rounded-xl border border-border bg-muted/30 p-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label htmlFor="new-column-name" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                Column Name
+              </label>
+              <input
+                id="new-column-name"
+                value={newColumnName}
+                onChange={(e) => setNewColumnName(e.target.value.slice(0, 60))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    onAddColumn();
+                  }
+                }}
+                placeholder="e.g. Boiler Blowdown"
+                className={inputCls}
+              />
+            </div>
+            <Button onClick={onAddColumn} className="h-10 gap-1.5 rounded-xl">
+              <Save className="h-4 w-4" /> Save
+            </Button>
+          </div>
+        ) : null}
+
+        {customColumns.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No custom columns yet. Use <span className="font-medium text-foreground">Add Column</span> to create one for this unit.
+          </p>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="border-b border-border pb-2 pr-3 font-medium">#</th>
+                  <th className="border-b border-border pb-2 pr-3 font-medium">Column</th>
+                  <th className="border-b border-border pb-2 font-medium">Value</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customColumns.map((c, i) => (
+                  <tr key={c.id} className="border-b border-border/60 last:border-0">
+                    <td className="py-2 pr-3 text-muted-foreground">{i + 1}</td>
+                    {/* Rendered as text by React — a column name is never treated as HTML. */}
+                    <td className="py-2 pr-3 font-medium text-foreground">{c.name}</td>
+                    <td className="py-2">
+                      <input
+                        inputMode="decimal"
+                        aria-label={c.name}
+                        value={customValue(c.id)}
+                        onChange={(e) => setCustom((prev) => ({ ...prev, [c.id]: numFilter(e.target.value) }))}
+                        className={inputCls + " max-w-40"}
+                        placeholder="—"
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* summary + submit */}

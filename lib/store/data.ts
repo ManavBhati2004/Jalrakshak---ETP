@@ -15,6 +15,7 @@ import type {
   EtpEntry,
   MeterReading,
   EntryStatus,
+  CustomColumnDef,
 } from "@/lib/types";
 import {
   industries as seedIndustries,
@@ -25,7 +26,7 @@ import {
   buildEtpEntries,
   buildEtpApprovals,
 } from "@/lib/data/seed";
-import { ALERT_META, complianceStatus, WATER_METERS } from "@/lib/constants";
+import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
 import { toMeterReading, groupGrandTotals, toLedger, round1 } from "@/lib/data/etp-calc";
 
 export interface ReadingInput {
@@ -106,8 +107,13 @@ export interface EtpEntryInput {
   energyRemark: string;
   sludge: LedgerInput;
   salt: LedgerInput;
+  /** Values for the unit's custom columns, keyed by CustomColumnDef.id (optional). */
+  custom?: Record<string, number | null>;
   overrideReason?: string; // reason recorded when a missing-prior-day continuity override was authorised
 }
+
+/** Result of adding an operator-defined Daily ETP Entry column. */
+export type AddCustomColumnResult = { ok: true; column: CustomColumnDef } | { ok: false; error: string };
 
 interface DataState {
   industries: Industry[];
@@ -125,6 +131,7 @@ interface DataState {
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
   setMonthlyProduction: (industryId: string, month: string, meters: number) => void;
+  addCustomColumn: (industryId: string, name: string) => AddCustomColumnResult;
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
   resetData: () => void;
@@ -313,6 +320,7 @@ export const useDataStore = create<DataState>()(
           energyRemark: input.energyRemark,
           sludge,
           salt,
+          ...(input.custom ? { custom: input.custom } : {}),
           entryStatus: input.status,
           overrideReason: input.overrideReason,
         };
@@ -627,6 +635,34 @@ export const useDataStore = create<DataState>()(
       },
 
       // Monthly compliance manual field: cloths production (meters) per unit/month.
+      /**
+       * Adds an operator-defined column to ONE unit. Definitions live on that unit's Industry
+       * record, so they are tenant-scoped automatically. Names are display-only; the permanent
+       * key is the generated `id`, so a name can never break saved values.
+       */
+      addCustomColumn: (industryId, name) => {
+        const clean = name.trim();
+        if (!clean) return { ok: false, error: "Column name is required." };
+        if (clean.length > 60) return { ok: false, error: "Column name must be 60 characters or fewer." };
+        const lower = clean.toLowerCase();
+        const builtIn = [...WATER_METERS.map((m) => m.label), ...ENERGY_METERS.map((m) => m.label)];
+        if (builtIn.some((l) => l.toLowerCase() === lower)) return { ok: false, error: "That name is already used by a built-in column." };
+        const ind = get().industries.find((i) => i.id === industryId);
+        if (!ind) return { ok: false, error: "Unit not found." };
+        const existing = ind.customColumns ?? [];
+        if (existing.some((c) => c.name.trim().toLowerCase() === lower)) return { ok: false, error: "A column with that name already exists." };
+        const column: CustomColumnDef = {
+          id: `CC-${Date.now().toString(36).toUpperCase()}`,
+          name: clean,
+          order: existing.length,
+          createdAt: new Date().toISOString(),
+        };
+        set((s) => ({
+          industries: s.industries.map((i) => (i.id === industryId ? { ...i, customColumns: [...existing, column] } : i)),
+        }));
+        return { ok: true, column };
+      },
+
       setMonthlyProduction: (industryId, month, meters) =>
         set((s) => ({
           industries: s.industries.map((i) =>

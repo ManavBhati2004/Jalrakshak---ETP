@@ -135,14 +135,14 @@ export const WATER_GROUPS: { id: WaterGroup; label: string; unit: string }[] = [
 
 export interface EnergyMeterDef {
   code: string;
-  label: string; // verbatim Excel section label
+  label: string; // visible display label (renamed from the Excel section wording)
   panel: string; // Excel "Location of Meter"
 }
 
 export const ENERGY_METERS: readonly EnergyMeterDef[] = [
-  { code: "ETP_POWER", label: "ETP inlet Section-Total of all stream", panel: "Main panel" },
-  { code: "RO_POWER", label: "RO Reject Section-Total", panel: "RO plant panel" },
-  { code: "MEE_POWER", label: "MEE Reject Section Total", panel: "MEE panel" },
+  { code: "ETP_POWER", label: "ETP POWER CONSUMPTION", panel: "Main panel" },
+  { code: "RO_POWER", label: "RO POWER CONSUMPTION", panel: "RO plant panel" },
+  { code: "MEE_POWER", label: "MEE POWER CONSUMPTION", panel: "MEE panel" },
 ] as const;
 
 export type WaterMeterCode = (typeof WATER_METERS)[number]["code"];

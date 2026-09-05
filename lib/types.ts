@@ -35,6 +35,19 @@ export type IndustryStatus =
   | "suspended"
   | "non-reporting";
 
+/**
+ * A user-defined extra column on the Daily ETP Entry sheet. Definitions live on the unit's own
+ * `Industry` record, so they are tenant-scoped for free: a column added by unit A can never be
+ * read by unit B (firestore.rules already isolates `industries/{id}`). `id` is the permanent
+ * storage key; `name` is only ever a display label and may be re-used freely across units.
+ */
+export interface CustomColumnDef {
+  id: string;
+  name: string;
+  order: number;
+  createdAt?: string;
+}
+
 export interface Industry {
   id: string;
   name: string;
@@ -82,6 +95,8 @@ export interface Industry {
   registrationCompletedAt?: string | null;
   /** Manual monthly compliance input: cloths production in meters, keyed by "YYYY-MM". */
   monthlyProduction?: Record<string, number>;
+  /** Operator-defined extra Daily ETP Entry columns. Absent on units that never added one. */
+  customColumns?: CustomColumnDef[];
   lastReadingAt: string | null;
   alertsCount: number;
   registeredAt: string;
@@ -157,6 +172,11 @@ export interface EtpEntry {
   energyRemark?: string;
   sludge?: HwLedger; // ETP sludge (kg)
   salt?: HwLedger; // ATFD/PAN salt, MEE section (kg)
+  /**
+   * Values for the unit's custom columns, keyed by `CustomColumnDef.id`. Optional and sparse:
+   * historical entries predate any column and stay valid - a missing key renders blank, NOT 0.
+   */
+  custom?: Record<string, number | null>;
   entryStatus?: EntryStatus; // DRAFT | SUBMITTED (append-only submit workflow)
   overrideReason?: string; // audit note when a missing-prior-day continuity override was authorised
 }

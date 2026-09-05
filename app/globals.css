@@ -408,3 +408,80 @@
     margin-top: 5px;
   }
 }
+
+/* ---- Compliance Report — the client's prescribed RSPCB template (screen + print) ----
+   Fixed 6-column bordered grid reproducing "Compliance Report 5" of the client workbook.
+   Deliberately plain (black rules on white) so the printed page matches the regulator's
+   form rather than the app's dashboard theme. */
+.crs {
+  table-layout: fixed;
+  border: 1px solid #000;
+  color: #000;
+  background: #fff;
+}
+.crs th,
+.crs td {
+  border: 1px solid #000;
+  padding: 4px 6px;
+  vertical-align: middle;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.crs-c-no {
+  width: 4%;
+}
+.crs-c-label {
+  width: 26%;
+}
+.crs-title {
+  text-align: center;
+  font-weight: 700;
+  font-size: 17px;
+}
+.crs-no {
+  text-align: center;
+}
+.crs-label {
+  text-align: left;
+  font-weight: 700;
+}
+.crs-v {
+  text-align: center;
+}
+.crs-head {
+  font-weight: 700;
+  text-align: center;
+}
+.crs-section {
+  text-align: center;
+  font-weight: 700;
+}
+.crs-sign {
+  font-weight: 700;
+  padding-top: 14px;
+}
+/* The client's template has blank spacer rows between sections — reproduced, given height. */
+.crs-spacer td {
+  height: 16px;
+}
+
+@media print {
+  .crs-wrap {
+    overflow: visible !important;
+  }
+  .crs {
+    font-size: 8px;
+  }
+  .crs th,
+  .crs td {
+    padding: 2px 3px;
+  }
+  .crs-title {
+    font-size: 12px;
+  }
+  /* The prescribed form is portrait; the daily grids that follow stay landscape. */
+  .crs-wrap {
+    break-after: page;
+    page-break-after: always;
+  }
+}

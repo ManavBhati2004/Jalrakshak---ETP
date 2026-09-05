@@ -3,7 +3,7 @@
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
 import { round1, kgToMt } from "@/lib/data/etp-calc";
-import { daysInMonth } from "@/lib/data/monthly";
+import { daysInMonth, ledgerRollup } from "@/lib/data/monthly";
 import { formatNumber, formatDate } from "@/lib/utils";
 
 /**
@@ -18,7 +18,7 @@ type Section = { label: string; code: string };
 const DAILY: Section[] = WATER_METERS.filter((m) => m.group === "daily").map((m) => ({ label: m.label, code: m.code }));
 const RO: Section[] = WATER_METERS.filter((m) => m.group === "ro").map((m) => ({ label: m.label, code: m.code }));
 const MEE: Section[] = WATER_METERS.filter((m) => m.group === "mee").map((m) => ({ label: m.label, code: m.code }));
-const ENERGY: Section[] = ENERGY_METERS.map((m) => ({ label: `${m.label} (${m.panel})`, code: m.code }));
+const ENERGY: Section[] = ENERGY_METERS.map((m) => ({ label: m.label, code: m.code }));
 
 const mt = (kg: number) => formatNumber(kgToMt(kg));
 
@@ -26,14 +26,16 @@ export function MonthlyPrintSheets({ industry, monthly, month }: { industry: Ind
   const days = daysInMonth(month);
   const byDate = new Map(monthly.map((e) => [e.date, e]));
   const dates = Array.from({ length: days }, (_, i) => `${month}-${String(i + 1).padStart(2, "0")}`);
+  // Reuse the single monthly rollup - no second disposal formula anywhere.
+  const sludgeDisposalKg = ledgerRollup(monthly, "sludge").disposalKg;
 
   return (
     <div className="mps hidden print:block" aria-hidden>
-      <MeterGrid title="Daily Log Sheet — Fresh / ETP / Tertiary / Reuse (M3)" unit="M3" kind="water" sections={DAILY} industry={industry} month={month} dates={dates} byDate={byDate} />
+      <MeterGrid title="DAILY ETP LOG SHEET BOOK — Fresh / ETP / Tertiary / Reuse (M3)" unit="M3" kind="water" sections={DAILY} industry={industry} month={month} dates={dates} byDate={byDate} />
       <MeterGrid title="RO Section (M3)" unit="M3" kind="water" sections={RO} exclude={RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON ? ["RO_PERMEATE_COMMON"] : []} industry={industry} month={month} dates={dates} byDate={byDate} />
       <MeterGrid title="MEE Section (M3)" unit="M3" kind="water" sections={MEE} industry={industry} month={month} dates={dates} byDate={byDate} />
       <MeterGrid title="Daily Electricity / Energy (Kwh)" unit="Kwh" kind="energy" sections={ENERGY} industry={industry} month={month} dates={dates} byDate={byDate} />
-      <LedgerGrid industry={industry} month={month} dates={dates} byDate={byDate} />
+      <LedgerGrid industry={industry} month={month} dates={dates} byDate={byDate} sludgeDisposalKg={sludgeDisposalKg} />
     </div>
   );
 }
@@ -126,7 +128,7 @@ function MeterGrid({
   );
 }
 
-function LedgerGrid({ industry, month, dates, byDate }: { industry: Industry; month: string; dates: string[]; byDate: Map<string, EtpEntry> }) {
+function LedgerGrid({ industry, month, dates, byDate, sludgeDisposalKg }: { industry: Industry; month: string; dates: string[]; byDate: Map<string, EtpEntry>; sludgeDisposalKg: number }) {
   return (
     <section className="mps-sheet">
       <SheetHead industry={industry} month={month} title="Sludge & MEE-Salt Ledgers (MT)" />
@@ -157,7 +159,13 @@ function LedgerGrid({ industry, month, dates, byDate }: { industry: Industry; mo
           })}
         </tbody>
       </table>
-      <p className="mps-note">Authorised quantity (ETP sludge): {industry.authorisedQuantityKg ? `${mt(industry.authorisedQuantityKg)} MT` : "—"} · MEE-salt authorisation: not configured. Exact Initial/Final meter readings are in the Excel workbook download.</p>
+      <p className="mps-note">
+        Authorised quantity (ETP sludge): {industry.authorisedQuantityKg ? `${mt(industry.authorisedQuantityKg)} MT` : "—"}
+        <br />
+        Sum of Disposal During Month: {mt(sludgeDisposalKg)} MT
+        <br />
+        MEE-salt authorisation: not configured. Exact Initial/Final meter readings are in the Excel workbook download.
+      </p>
     </section>
   );
 }

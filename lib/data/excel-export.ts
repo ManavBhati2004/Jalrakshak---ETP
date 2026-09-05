@@ -9,7 +9,7 @@
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
 import { round1, kgToMt, toCanonicalKg } from "@/lib/data/etp-calc";
-import { monthEntries, ledgerRollup, monthlyWaterTotal, daysInMonth, manifestRows } from "@/lib/data/monthly";
+import { monthEntries, ledgerRollup, monthlyWaterTotal, monthlyWaterTotalOf, TRADE_EFFLUENT_RECYCLED_CODES, daysInMonth, manifestRows } from "@/lib/data/monthly";
 
 type XLSXModule = typeof import("xlsx-js-style");
 type Section = { label: string; code: string };
@@ -33,7 +33,7 @@ const S = {
 const DAILY_SECTIONS: Section[] = WATER_METERS.filter((m) => m.group === "daily").map((m) => ({ label: m.label, code: m.code }));
 const RO_SECTIONS: Section[] = WATER_METERS.filter((m) => m.group === "ro").map((m) => ({ label: m.label, code: m.code }));
 const MEE_SECTIONS: Section[] = WATER_METERS.filter((m) => m.group === "mee").map((m) => ({ label: m.label, code: m.code }));
-const ENERGY_SECTIONS: Section[] = ENERGY_METERS.map((m) => ({ label: `${m.label} (${m.panel})`, code: m.code }));
+const ENERGY_SECTIONS: Section[] = ENERGY_METERS.map((m) => ({ label: m.label, code: m.code }));
 
 function setStyle(XLSX: XLSXModule, ws: Record<string, unknown>, r: number, c: number, style: object) {
   const addr = XLSX.utils.encode_cell({ r, c });
@@ -147,6 +147,14 @@ function ledgerSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], 
   authRow[7] = "Not configured";
   rows.push(authRow);
 
+  // Change 5 - the month's disposal total, nested directly under the authorised quantity it is
+  // measured against. Reuses the single ledgerRollup below; no second disposal formula.
+  const dispRow: Cell[] = new Array(totalCols).fill("");
+  dispRow[0] = "Sum of Disposal During Month";
+  dispRow[1] = `${kgToMt(ledgerRollup(monthly, "sludge").disposalKg)} MT`;
+  dispRow[7] = `${kgToMt(ledgerRollup(monthly, "salt").disposalKg)} MT`;
+  rows.push(dispRow);
+
   const ledgerCols = ["Opening Balance in MT", "Generation During Month in MT", "Date of disposal", "Disposal during month in MT", "Manifest No.", "Closing stock in MT"];
   rows.push(["Date/Month/Year", ...ledgerCols, ...ledgerCols]);
 
@@ -181,6 +189,8 @@ function ledgerSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], 
     { s: { r: 4, c: 7 }, e: { r: 4, c: 12 } },
     { s: { r: 5, c: 1 }, e: { r: 5, c: 6 } },
     { s: { r: 5, c: 7 }, e: { r: 5, c: 12 } },
+    { s: { r: 6, c: 1 }, e: { r: 6, c: 6 } },
+    { s: { r: 6, c: 7 }, e: { r: 6, c: 12 } },
   ];
   ws["!cols"] = new Array(totalCols).fill(0).map((_, c) => ({ wch: c === 0 ? 14 : 13 }));
 
@@ -190,8 +200,8 @@ function ledgerSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], 
       let style: object = S.cell;
       if (r === 0) style = S.title;
       else if (r >= 1 && r <= 3) style = c === 0 ? S.label : S.value;
-      else if (r === 4 || r === 5) style = c === 0 ? S.label : S.section;
-      else if (r === 6) style = S.header;
+      else if (r === 4 || r === 5 || r === 6) style = c === 0 ? S.label : S.section;
+      else if (r === 7) style = S.header;
       else if (r === lastRow) style = S.total;
       setStyle(XLSX, ws, r, c, style);
     }
@@ -199,44 +209,128 @@ function ledgerSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], 
   return ws;
 }
 
-/* ---------- compliance report sheet ---------- */
+/* ---------- compliance report sheet ----------
+   EXACT reproduction of the client's prescribed format (sheet "Compliance Report 5" of
+   7. MAYANK TEXOFIN JULY 2026.xlsx). Six columns; the client's own row numbering, which
+   genuinely jumps 13 -> 22 -> 24 -> 25; and their static wording kept VERBATIM, typos
+   included ("Uit ID", "Consent oredr no.", "Manifeast no", "Authoeized Signatory").      */
+
+/** "2021-12-01" -> "01/12/2021"; anything else passes through untouched. */
+function dmy(iso?: string): string {
+  if (!iso) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
+const LEDGER_HEADS = [
+  "Opening Balance as on 1 day of the month in MT",
+  "Generation During Month in MT",
+  "Disposal During Month in MT",
+  "Closing stock of sludge on the last day of month in MT",
+];
+
 function complianceSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], month: string, cloths: number) {
+  const COLS = 6;
   const rows: Cell[][] = [];
-  const kv = (n: number | string, k: string, v: Cell) => rows.push([n, k, v]);
-  rows.push(["Compliance Report — ETP Unit", "", ""]);
-  kv(1, "Name of unit", industry.name);
-  kv(2, "Unit ID (MIS)", industry.misId ?? "");
-  kv(3, "Address", industry.address ?? industry.area ?? "");
-  kv(4, "Email", industry.email);
-  kv(5, "Mobile", industry.mobile);
-  kv(6, "Consent Order No.", `${industry.consentOrderNo ?? ""}  (${industry.consentValidFrom ?? ""} to ${industry.consentValidTo ?? ""})`);
-  kv(7, "HWM Authorization No.", `${industry.hwmAuthNo ?? ""}  (${industry.hwmValidFrom ?? ""} to ${industry.hwmValidTo ?? ""})`);
-  kv(8, "Reporting month", month);
-  kv(9, "Cloths Production – in meters (monthly)", cloths || 0);
-  kv(10, "Raw Fresh Water (M3) — auto-summed", monthlyWaterTotal(monthly, "RAW_FRESH_WATER"));
-  kv(11, "Raw Influent Generation (M3) — auto-summed", monthlyWaterTotal(monthly, "ETP_INLET_ALL_STREAMS"));
+  /** Push one row, left-padded to the full six columns. */
+  const push = (...cells: Cell[]) => {
+    const r: Cell[] = new Array(COLS).fill("");
+    cells.forEach((v, i) => {
+      r[i] = v;
+    });
+    rows.push(r);
+  };
 
-  rows.push(["", "", ""]);
-  rows.push(["Details of ETP Sludge (MT)", "", ""]);
-  rows.push(["Opening", "Generation", "Disposal", "Closing"]);
+  const days = daysInMonth(month);
+  const [yy, mm] = month.split("-");
+  const range = `01/${mm}/${yy} to ${String(days).padStart(2, "0")}/${mm}/${yy}`;
+  const validity = (a?: string, b?: string) => (dmy(a) && dmy(b) ? `${dmy(a)} to ${dmy(b)}` : dmy(a) || dmy(b) || "");
+
+  push("Compliance Report ETP Unit");
+  push(1, "Name of unit", industry.name);
+  push(2, "Uit ID", industry.misId ?? "");
+  push(3, "Address", industry.address ?? industry.area ?? "");
+  push(4, "Email", industry.email);
+  push(5, "Mobile", industry.mobile);
+  push(6, "Consent oredr no.", industry.consentOrderNo ?? industry.consentNumber ?? "", "order date", validity(industry.consentValidFrom, industry.consentValidTo), "Validity");
+  push(7, "Authorization no.", industry.hwmAuthNo ?? "", "order date", validity(industry.hwmValidFrom, industry.hwmValidTo), "Validity");
+  push(8, "Production (Monthly)(From 1st day of month to last day of month)", cloths ? `${cloths} METERS` : "");
+  push(9, "Raw water Monthly", "Consumption", "", "Source", "");
+  // Source is not captured anywhere in the app - left blank rather than fabricated.
+  push("", "", monthlyWaterTotal(monthly, "RAW_FRESH_WATER"), "M3", "", "");
+  // Sigma "ETP Inlet Section - Total of All Stream" (one field label, NOT a subtraction).
+  push(10, "Trade Effluent Generation", `${monthlyWaterTotal(monthly, "ETP_INLET_ALL_STREAMS")} M3`);
+  // Direct Reuse + RO Permeate 1&2 + RO Permeate 3&4 + MEE Condensate.
+  push(11, "Trade effluent recycled M3", `${monthlyWaterTotalOf(monthly, TRADE_EFFLUENT_RECYCLED_CODES)} M3`);
+  // Not measured by this application; the template's own static wording.
+  push(12, "Boiler/Thermopack*", "Monitoring results");
+  push(13, "AAQM*", "Monitoring results");
+
   const sR = ledgerRollup(monthly, "sludge");
-  rows.push([kgToMt(sR.openingKg), kgToMt(sR.generationKg), kgToMt(sR.disposalKg), kgToMt(sR.closingKg)]);
-  rows.push(["Details of ATFD Salt (MEE) (MT)", "", ""]);
-  rows.push(["Opening", "Generation", "Disposal", "Closing"]);
   const tR = ledgerRollup(monthly, "salt");
-  rows.push([kgToMt(tR.openingKg), kgToMt(tR.generationKg), kgToMt(tR.disposalKg), kgToMt(tR.closingKg)]);
+  const sludgeSecRow = rows.length;
+  push(22, "Details of ETP Sludge");
+  const sludgeHeadRow = rows.length;
+  push(23, "Date", ...LEDGER_HEADS);
+  push("", range, kgToMt(sR.openingKg), kgToMt(sR.generationKg), sR.disposalKg ? kgToMt(sR.disposalKg) : "", kgToMt(sR.closingKg));
+  push(); // the template carries two blank spacer rows here -
+  push(); // reproduced so the row positions match the regulator's form exactly.
+  const saltSecRow = rows.length;
+  push(24, "Details of MEE salt");
+  const saltHeadRow = rows.length;
+  push("", "Date", ...LEDGER_HEADS);
+  push("", range, kgToMt(tR.openingKg), kgToMt(tR.generationKg), tR.disposalKg ? kgToMt(tR.disposalKg) : "", kgToMt(tR.closingKg));
 
-  rows.push(["", "", ""]);
-  rows.push(["Details of manifest", "", "", "", ""]);
-  rows.push(["Date", "Manifest No.", "Type of waste", "Quantity (kg)"]);
-  for (const m of manifestRows(monthly)) rows.push([m.date, m.manifestNo, m.wasteType, m.quantityKg]);
-  rows.push(["", "", ""]);
-  rows.push(["", "Name, Designation & Signature of Authorised Signatory:", `${industry.signatoryName ?? ""} (${industry.signatoryDesignation ?? ""})`]);
+  const manifestSecRow = rows.length;
+  push("", "Details of manifest");
+  const manifestHeadRow = rows.length;
+  push(25, "S No.", "Date", "Manifeast no", "Type of waste", "Quantity");
+  const manifests = manifestRows(monthly);
+  if (manifests.length === 0) {
+    // The template itself carries one placeholder sludge row - keep the shape.
+    push("", 1, "", "", "ETP SLUDGE", "");
+  } else {
+    manifests.forEach((m, i) => push("", i + 1, dmy(m.date), m.manifestNo, m.wasteType, kgToMt(m.quantityKg)));
+  }
+  push(); // two more template spacer rows before the signatory line
+  push();
+  const signRow = rows.length;
+  push(`Name, Designation and Signature of Authoeized Signatory${industry.signatoryName ? ` - ${industry.signatoryName}${industry.signatoryDesignation ? ` (${industry.signatoryDesignation})` : ""}` : ""}`);
 
   const ws = XLSX.utils.aoa_to_sheet(rows) as Record<string, unknown>;
-  ws["!cols"] = [{ wch: 30 }, { wch: 34 }, { wch: 30 }, { wch: 18 }];
-  ws["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
-  setStyle(XLSX, ws, 0, 0, S.title);
+  ws["!cols"] = [{ wch: 6 }, { wch: 42 }, { wch: 26 }, { wch: 22 }, { wch: 26 }, { wch: 30 }];
+
+  const full = (r: number) => ({ s: { r, c: 0 }, e: { r, c: COLS - 1 } });
+  const valueSpan = (r: number) => ({ s: { r, c: 2 }, e: { r, c: COLS - 1 } });
+  const labelSpan = (r: number) => ({ s: { r, c: 1 }, e: { r, c: COLS - 1 } });
+  const RAW_HEAD = 9; // "9 | Raw water Monthly" spans this row and the next
+  ws["!merges"] = [
+    full(0),
+    ...[1, 2, 3, 4, 5].map(valueSpan), // rows 1-5 values span C:F
+    valueSpan(8), // production
+    { s: { r: RAW_HEAD, c: 0 }, e: { r: RAW_HEAD + 1, c: 0 } }, // "9" spans the two raw-water rows
+    { s: { r: RAW_HEAD, c: 1 }, e: { r: RAW_HEAD + 1, c: 1 } }, // "Raw water Monthly" likewise
+    { s: { r: RAW_HEAD, c: 2 }, e: { r: RAW_HEAD, c: 3 } }, // Consumption -> C:D
+    { s: { r: RAW_HEAD, c: 4 }, e: { r: RAW_HEAD, c: 5 } }, // Source -> E:F
+    ...[11, 12, 13, 14].map(valueSpan), // trade effluent x2, boiler, AAQM
+    labelSpan(sludgeSecRow),
+    labelSpan(saltSecRow),
+    labelSpan(manifestSecRow),
+    full(signRow),
+  ];
+
+  const headRows = new Set([RAW_HEAD, sludgeHeadRow, saltHeadRow, manifestHeadRow]);
+  const sectionRows = new Set([sludgeSecRow, saltSecRow, manifestSecRow]);
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < COLS; c++) {
+      let style: object = S.value;
+      if (r === 0 || r === signRow) style = S.title;
+      else if (headRows.has(r)) style = S.header;
+      else if (sectionRows.has(r)) style = S.section;
+      else if (c === 0 || c === 1) style = S.label;
+      setStyle(XLSX, ws, r, c, style);
+    }
+  }
   return ws;
 }
 
@@ -246,7 +340,7 @@ export async function downloadMonthlyWorkbook(industry: Industry, entries: EtpEn
   const monthly = monthEntries(entries, industry.id, month);
   const wb = XLSX.utils.book_new();
 
-  XLSX.utils.book_append_sheet(wb, meterSheet(XLSX, industry, monthly, month, { kind: "water", title: "Daily Log-Sheet book", unit: "M3", sections: DAILY_SECTIONS }), "Daily LogBook");
+  XLSX.utils.book_append_sheet(wb, meterSheet(XLSX, industry, monthly, month, { kind: "water", title: "DAILY ETP LOG SHEET BOOK", unit: "M3", sections: DAILY_SECTIONS }), "Daily LogBook");
   XLSX.utils.book_append_sheet(
     wb,
     meterSheet(XLSX, industry, monthly, month, { kind: "water", title: "Daily Log-Sheet book (RO)", unit: "M3", sections: RO_SECTIONS, excludeCodes: RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON ? ["RO_PERMEATE_COMMON"] : [] }),

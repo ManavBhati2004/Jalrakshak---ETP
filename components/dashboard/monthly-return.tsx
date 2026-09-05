@@ -8,11 +8,9 @@ import { Button } from "@/components/ui/button";
 import type { Industry } from "@/lib/types";
 import { buildMonthlyCompliance, monthEntries } from "@/lib/data/monthly";
 import { downloadMonthlyWorkbook } from "@/lib/data/excel-export";
-import { kgToMt } from "@/lib/data/etp-calc";
 import { MonthlyPrintSheets } from "@/components/dashboard/monthly-print-sheets";
+import { ComplianceReportSheet } from "@/components/dashboard/compliance-report-sheet";
 import { formatNumber } from "@/lib/utils";
-
-const mt = (kg: number) => `${formatNumber(kgToMt(kg))} MT`;
 
 export function MonthlyReturn({ industry }: { industry: Industry }) {
   const entries = useDataStore((s) => s.etpEntries);
@@ -82,8 +80,8 @@ export function MonthlyReturn({ industry }: { industry: Industry }) {
         </div>
       </div>
 
-      {/* printable compliance report */}
-      <div className="mr-print rounded-2xl border border-border bg-card p-5">
+      {/* On-screen summary. Screen-only: the PRINTED output is the exact prescribed template. */}
+      <div className="mr-screen rounded-2xl border border-border bg-card p-5">
         <div className="flex items-center gap-2 border-b border-border pb-3">
           <FileSpreadsheet className="h-5 w-5 text-primary" />
           <div>
@@ -92,53 +90,21 @@ export function MonthlyReturn({ industry }: { industry: Industry }) {
           </div>
         </div>
 
-        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Metric label="Cloths Production (manual)" value={`${formatNumber(summary.clothsProductionMeters)} m`} />
           <Metric label="Raw Fresh Water (auto-summed)" value={`${formatNumber(summary.rawFreshWaterM3)} m³`} />
           <Metric label="Raw Influent Generation (auto-summed)" value={`${formatNumber(summary.rawInfluentM3)} m³`} />
+          <Metric label="RECYCLE WATER" value={`${formatNumber(summary.recycleWaterM3)} m³`} />
         </div>
 
-        <div className="mt-5 grid gap-5 lg:grid-cols-2">
-          <RollupTable title="Details of ETP Sludge" r={summary.sludge} />
-          <RollupTable title="ATFD Salt (MEE Section) / PAN Salt (MEE)" r={summary.salt} />
-        </div>
-
-        <div className="mt-5">
-          <h4 className="mb-2 font-display text-sm font-bold text-foreground">Details of manifest</h4>
-          {summary.manifests.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No dispatches recorded this month.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
-                    <th className="border-b border-border pb-1.5 pr-3">Date</th>
-                    <th className="border-b border-border pb-1.5 pr-3">Manifest No.</th>
-                    <th className="border-b border-border pb-1.5 pr-3">Type of waste</th>
-                    <th className="border-b border-border pb-1.5">Quantity (MT)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.manifests.map((m, i) => (
-                    <tr key={i} className="border-b border-border/60">
-                      <td className="py-1.5 pr-3">{m.date}</td>
-                      <td className="py-1.5 pr-3">{m.manifestNo || "—"}</td>
-                      <td className="py-1.5 pr-3">{m.wasteType}</td>
-                      <td className="py-1.5">{mt(m.quantityKg)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <p className="mt-6 text-xs text-muted-foreground">
-          Name, Designation &amp; Signature of Authorised Signatory: <span className="font-medium text-foreground">{industry.signatoryName ?? "—"}{industry.signatoryDesignation ? ` (${industry.signatoryDesignation})` : ""}</span>
-        </p>
-        <p className="mt-2 text-[11px] text-muted-foreground">
+        <p className="mt-3 text-[11px] text-muted-foreground">
           The full RSPCB 6-sheet workbook (daily water/RO/MEE/kWh grids + sludge-salt ledger in MT + this compliance report) is available via <span className="font-medium">Download Excel</span>. Figures use submitted/approved entries only.
         </p>
+      </div>
+
+      {/* The prescribed RSPCB compliance report, reproduced exactly (screen + print). */}
+      <div className="mr-print rounded-2xl border border-border bg-card p-5">
+        <ComplianceReportSheet industry={industry} summary={summary} />
 
         {/* daily-grid regulator sheets — print only (§12) */}
         <MonthlyPrintSheets industry={industry} monthly={monthlyEntries} month={month} />
@@ -153,31 +119,6 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
       <p className="mt-1 font-mono text-lg font-bold text-primary">{value}</p>
     </div>
-  );
-}
-
-function RollupTable({ title, r }: { title: string; r: { openingKg: number; generationKg: number; disposalKg: number; closingKg: number } }) {
-  return (
-    <div className="rounded-xl border border-border bg-muted/20 p-4">
-      <h4 className="mb-2 font-display text-sm font-bold text-foreground">{title}</h4>
-      <table className="w-full text-sm">
-        <tbody>
-          <Row k="Opening balance (1st)" v={mt(r.openingKg)} />
-          <Row k="Generation during month" v={mt(r.generationKg)} />
-          <Row k="Disposal during month" v={mt(r.disposalKg)} />
-          <Row k="Closing stock (last day)" v={mt(r.closingKg)} bold />
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function Row({ k, v, bold }: { k: string; v: string; bold?: boolean }) {
-  return (
-    <tr className="border-b border-border/50 last:border-0">
-      <td className="py-1.5 text-muted-foreground">{k}</td>
-      <td className={`py-1.5 text-right font-mono ${bold ? "font-bold text-primary" : "text-foreground"}`}>{v}</td>
-    </tr>
   );
 }
 
