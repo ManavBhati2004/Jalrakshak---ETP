@@ -334,6 +334,70 @@ function complianceSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry
   return ws;
 }
 
+/* ---------- custom-columns sheet (operator-defined, dynamic) ----------
+   Deliberately a SEPARATE sheet. Sheets 1-6 reproduce the regulator's prescribed
+   template exactly, and injecting user-named columns into them would break that
+   fidelity. Custom columns are bare scalars, so they also cannot fit meterSheet's
+   fixed Time/Initial/Final/Total quartet. Omitted entirely when the unit has none. */
+function customColumnSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], month: string) {
+  const cols = [...(industry.customColumns ?? [])].sort((a, b) => a.order - b.order);
+  const totalCols = 1 + cols.length;
+  const rows: Cell[][] = [];
+
+  rows.push(["Custom Columns"]);
+  rows.push(["Name", industry.name]);
+  rows.push(["Address", industry.address ?? industry.area ?? ""]);
+  rows.push(["MIS ID", industry.misId ?? ""]);
+  rows.push(["Date/Month/Year", ...cols.map((c) => c.name)]);
+
+  const days = daysInMonth(month);
+  const sums = new Array(cols.length).fill(0);
+  const seen = new Array(cols.length).fill(false);
+  for (let d = 1; d <= days; d++) {
+    const date = `${month}-${String(d).padStart(2, "0")}`;
+    const e = monthly.find((x) => x.date === date);
+    const row: Cell[] = [date];
+    cols.forEach((c, i) => {
+      const v = e?.custom?.[c.id];
+      // A day with no value stays EMPTY rather than 0 - entries filed before the
+      // column existed must not be reported as a measured zero.
+      if (v == null) {
+        row.push("");
+      } else {
+        row.push(v);
+        sums[i] = round1(sums[i] + Number(v));
+        seen[i] = true;
+      }
+    });
+    rows.push(row);
+  }
+
+  const totalRow: Cell[] = ["Monthly Total", ...sums.map((v, i) => (seen[i] ? v : ""))];
+  rows.push(totalRow);
+
+  const ws = XLSX.utils.aoa_to_sheet(rows) as Record<string, unknown>;
+  ws["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: Math.max(totalCols - 1, 1) } },
+    { s: { r: 1, c: 1 }, e: { r: 1, c: Math.max(totalCols - 1, 1) } },
+    { s: { r: 2, c: 1 }, e: { r: 2, c: Math.max(totalCols - 1, 1) } },
+    { s: { r: 3, c: 1 }, e: { r: 3, c: Math.max(totalCols - 1, 1) } },
+  ];
+  ws["!cols"] = new Array(totalCols).fill(0).map((_, c) => ({ wch: c === 0 ? 16 : 18 }));
+
+  const lastRow = rows.length - 1;
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < totalCols; c++) {
+      let style: object = S.cell;
+      if (r === 0) style = S.title;
+      else if (r >= 1 && r <= 3) style = c === 0 ? S.label : S.value;
+      else if (r === 4) style = S.header;
+      else if (r === lastRow) style = S.total;
+      setStyle(XLSX, ws, r, c, style);
+    }
+  }
+  return ws;
+}
+
 /** Build + download the exact RSPCB monthly workbook for a unit. */
 export async function downloadMonthlyWorkbook(industry: Industry, entries: EtpEntry[], month: string, cloths: number) {
   const XLSX = await import("xlsx-js-style");
@@ -350,6 +414,10 @@ export async function downloadMonthlyWorkbook(industry: Industry, entries: EtpEn
   XLSX.utils.book_append_sheet(wb, meterSheet(XLSX, industry, monthly, month, { kind: "energy", title: "Daily Kwh Log Book", unit: "Kwh", sections: ENERGY_SECTIONS }), "Daily Kwh Log Book");
   XLSX.utils.book_append_sheet(wb, ledgerSheet(XLSX, industry, monthly, month), "Sludge,Salt Log Book");
   XLSX.utils.book_append_sheet(wb, complianceSheet(XLSX, industry, monthly, month, cloths), "Compliance Report");
+  // 7th sheet, present only when the operator has defined columns. Sheets 1-6 are untouched.
+  if ((industry.customColumns ?? []).length > 0) {
+    XLSX.utils.book_append_sheet(wb, customColumnSheet(XLSX, industry, monthly, month), "Custom Columns");
+  }
 
   const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });

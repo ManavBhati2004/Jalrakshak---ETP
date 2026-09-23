@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { DataTable } from "@/components/dashboard/data-table";
 import { DocumentsPanel } from "@/components/dashboard/documents-panel";
+import { entryMeterTotal } from "@/lib/data/etp-calc";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
@@ -98,6 +99,21 @@ export default function IndividualEtpPage() {
   );
 }
 
+/** MEE parameters as real, searchable, sortable columns (mirrors the operator view). */
+const ADMIN_MEE_COLUMNS: ColumnDef<EtpEntry>[] = [
+  { code: "MEE_FEED", header: "MEE Feed" },
+  { code: "MEE_CONDENSATE", header: "MEE Condensate" },
+  { code: "MEE_REJECT", header: "MEE Reject" },
+].map(({ code, header }) => ({
+  id: code,
+  header,
+  accessorFn: (e: EtpEntry) => entryMeterTotal(e, code) ?? "",
+  cell: ({ row }) => {
+    const v = entryMeterTotal(row.original, code);
+    return v == null ? <span className="text-sm text-muted-foreground">—</span> : <NumCell v={v} />;
+  },
+}));
+
 function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[]; onBack: () => void }) {
   const color = STATUS_COLOR[complianceStatus(ind.complianceScore)];
 
@@ -130,6 +146,7 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
     { accessorKey: "roInlet", header: "RO Inlet", cell: ({ row }) => <NumCell v={row.original.roInlet} /> },
     { accessorKey: "roReject", header: "RO Reject", cell: ({ row }) => <NumCell v={row.original.roReject} /> },
     { accessorKey: "roPermeate", header: "RO Permeate", cell: ({ row }) => <NumCell v={row.original.roPermeate} /> },
+    ...ADMIN_MEE_COLUMNS,
     { id: "sludgeDispatch", header: "Sludge Disp. (kg)", cell: ({ row }) => <NumCell v={row.original.sludge?.dispatch ?? 0} /> },
     {
       accessorKey: "totalWaterIntake",
@@ -140,6 +157,19 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
         </span>
       ),
     },
+    // The unit's own custom columns, so the Monitoring Body sees exactly what the operator filed.
+    ...(ind.customColumns ?? [])
+      .slice()
+      .sort((a, b) => a.order - b.order)
+      .map((c): ColumnDef<EtpEntry> => ({
+        id: `custom-${c.id}`,
+        header: c.name,
+        accessorFn: (e) => e.custom?.[c.id] ?? "",
+        cell: ({ row }) => {
+          const v = row.original.custom?.[c.id];
+          return v == null ? <span className="text-sm text-muted-foreground">—</span> : <NumCell v={Number(v)} />;
+        },
+      })),
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
   ];
 
@@ -154,11 +184,15 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
       "RO Inlet (m³)": e.roInlet,
       "RO Reject (m³)": e.roReject,
       "RO Permeate (m³)": e.roPermeate,
+      "MEE Feed (m³)": entryMeterTotal(e, "MEE_FEED") ?? "",
+      "MEE Condensate (m³)": entryMeterTotal(e, "MEE_CONDENSATE") ?? "",
+      "MEE Reject (m³)": entryMeterTotal(e, "MEE_REJECT") ?? "",
       "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
       "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,
+      ...Object.fromEntries((ind.customColumns ?? []).slice().sort((a, b) => a.order - b.order).map((c) => [c.name, e.custom?.[c.id] ?? ""])),
     }));
     download(stampedName(`jalrakshak-etp-${ind.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${ind.name}` });

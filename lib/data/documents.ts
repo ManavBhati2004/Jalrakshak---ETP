@@ -21,25 +21,15 @@
 import { Bytes, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, writeBatch, type Unsubscribe } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import type { EtpDocumentMeta, EtpDocumentType } from "@/lib/types";
+import { CHUNK_BYTES, checkPdfName, formatBytes, hasPdfMagic, joinChunks, planBatches, splitChunks, MAX_DOCUMENT_BYTES } from "@/lib/data/document-chunks";
 
-/** Well under Firestore's 1 MiB per-document cap, leaving room for the sibling fields. */
-const CHUNK_BYTES = 900_000;
-/** Firestore commits cap at ~10 MiB; stay clear of it and of the 500-op batch limit. */
-const BATCH_MAX_BYTES = 6_000_000;
-const BATCH_MAX_OPS = 100;
-/** Practical ceiling. Chunking removes the hard limit; this keeps uploads sane. */
-export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+export { formatBytes, splitChunks, joinChunks, MAX_DOCUMENT_BYTES };
+
 
 export type UploadResult = { ok: true; meta: EtpDocumentMeta } | { ok: false; error: string };
 
 const metaRef = (industryId: string, docType: EtpDocumentType) => doc(db, "industries", industryId, "docs", docType);
 const chunksCol = (industryId: string, docType: EtpDocumentType) => collection(db, "industries", industryId, "docs", docType, "chunks");
-
-/** Human-readable size for messages. */
-export function formatBytes(n: number): string {
-  if (!Number.isFinite(n) || n <= 0) return "0 KB";
-  return n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 /**
  * Validate before touching the network. Checks extension, MIME and the actual `%PDF`
@@ -47,42 +37,18 @@ export function formatBytes(n: number): string {
  * Client-side only, and therefore advisory: there is no server to re-check it.
  */
 export async function validatePdf(file: File): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!file.name.toLowerCase().endsWith(".pdf")) return { ok: false, error: "Only PDF files are accepted." };
+  const named = checkPdfName(file.name, file.size);
+  if (!named.ok) return named;
   if (file.type && file.type !== "application/pdf") return { ok: false, error: `Expected a PDF, got "${file.type}".` };
-  if (file.size === 0) return { ok: false, error: "That file is empty." };
-  if (file.size > MAX_DOCUMENT_BYTES) {
-    return { ok: false, error: `File is ${formatBytes(file.size)} — the limit is ${formatBytes(MAX_DOCUMENT_BYTES)}.` };
-  }
   try {
-    const head = new Uint8Array(await file.slice(0, 5).arrayBuffer());
-    // "%PDF-"
-    if (head[0] !== 0x25 || head[1] !== 0x50 || head[2] !== 0x44 || head[3] !== 0x46) {
+    // Reject a renamed .docx rather than storing it as a broken "PDF".
+    if (!hasPdfMagic(new Uint8Array(await file.slice(0, 5).arrayBuffer()))) {
       return { ok: false, error: "That file is not a valid PDF (missing PDF header)." };
     }
   } catch {
     return { ok: false, error: "Could not read the file." };
   }
   return { ok: true };
-}
-
-/** Split a byte array into upload-sized pieces. Exported for tests. */
-export function splitChunks(bytes: Uint8Array, chunkBytes: number = CHUNK_BYTES): Uint8Array[] {
-  if (chunkBytes <= 0) throw new Error("chunkBytes must be > 0");
-  const out: Uint8Array[] = [];
-  for (let off = 0; off < bytes.length; off += chunkBytes) out.push(bytes.subarray(off, Math.min(off + chunkBytes, bytes.length)));
-  return out.length ? out : [new Uint8Array(0)];
-}
-
-/** Reassemble chunks in index order. Exported for tests. */
-export function joinChunks(parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const p of parts) {
-    out.set(p, off);
-    off += p.length;
-  }
-  return out;
 }
 
 /**
@@ -110,29 +76,21 @@ export async function uploadDocument(input: {
     const prev = previous.exists() ? (previous.data() as EtpDocumentMeta) : null;
 
     const bytes = new Uint8Array(await file.arrayBuffer());
-    const parts = splitChunks(bytes);
+    const parts = splitChunks(bytes, CHUNK_BYTES);
     // Unique per upload; also what makes replacement atomic.
     const uploadId = `u${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 
     // 1. write the new chunks, batched under both the op and payload limits
-    let batch = writeBatch(db);
-    let batchBytes = 0;
-    let batchOps = 0;
     let written = 0;
-    for (let i = 0; i < parts.length; i++) {
-      if (batchOps > 0 && (batchBytes + parts[i].length > BATCH_MAX_BYTES || batchOps >= BATCH_MAX_OPS)) {
-        await batch.commit();
-        batch = writeBatch(db);
-        batchBytes = 0;
-        batchOps = 0;
+    for (const group of planBatches(parts.map((p) => p.length))) {
+      const batch = writeBatch(db);
+      for (const i of group) {
+        batch.set(doc(chunksCol(industryId, docType), `${uploadId}-${i}`), { i, data: Bytes.fromUint8Array(parts[i]) });
       }
-      batch.set(doc(chunksCol(industryId, docType), `${uploadId}-${i}`), { i, data: Bytes.fromUint8Array(parts[i]) });
-      batchBytes += parts[i].length;
-      batchOps += 1;
-      written += 1;
+      await batch.commit();
+      written += group.length;
       onProgress?.(Math.min(0.95, written / (parts.length + 1)));
     }
-    if (batchOps > 0) await batch.commit();
 
     // 2. flip the metadata to the new upload — this is the commit point
     const meta: EtpDocumentMeta = {

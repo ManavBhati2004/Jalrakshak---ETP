@@ -16,6 +16,8 @@ import {
   parseDailyValue,
   previousCalendarDay,
   dateRangeValid,
+  entryMeterTotal,
+  entryEnergyTotal,
 } from "./etp-calc";
 import type { EtpEntry } from "@/lib/types";
 
@@ -222,5 +224,51 @@ describe("resolveCarryForward — drafts/rejected are NOT valid priors", () => {
   it("a SUBMITTED yesterday still carries", () => {
     const cf = resolveCarryForward([{ ...draft("2026-08-13"), entryStatus: "SUBMITTED", status: "approved" }], "IND-1", "2026-08-14");
     expect(cf.priorDay?.date).toBe("2026-08-13");
+  });
+});
+
+/* ============================================================================
+   MEE parameters as first-class monitored values. They carry no `legacyKey`, so
+   they are reachable ONLY via entry.water[code] — never a legacy scalar.
+   ========================================================================== */
+describe("entryMeterTotal / entryEnergyTotal — MEE and energy accessors", () => {
+  const base = (): EtpEntry => ({
+    id: "E-1", industryId: "IND-1", industryName: "X", date: "2026-07-01",
+    freshWaterConsumption: 0, etpInlet: 0, etpOutlet: 0, etpReuse: 0, roInlet: 0, roReject: 0, roPermeate: 0,
+    sludgeToTSDF: 0, totalWaterIntake: 0, unit: "KL", status: "approved", submittedAt: "x", entryStatus: "SUBMITTED",
+  });
+
+  it("reads each MEE meter's daily total", () => {
+    const e: EtpEntry = { ...base(), water: {
+      MEE_FEED: { initial: 10, final: 15, total: 5 },
+      MEE_CONDENSATE: { initial: 3, final: 6.5, total: 3.5 },
+      MEE_REJECT: { initial: 0, final: 1.2, total: 1.2 },
+    } };
+    expect(entryMeterTotal(e, "MEE_FEED")).toBe(5);
+    expect(entryMeterTotal(e, "MEE_CONDENSATE")).toBe(3.5);
+    expect(entryMeterTotal(e, "MEE_REJECT")).toBe(1.2);
+  });
+
+  it("returns null — NOT 0 — for a meter the entry never recorded", () => {
+    // Older entries predate these meters; reporting a fabricated 0 would be a false reading.
+    const e: EtpEntry = { ...base(), water: { RAW_FRESH_WATER: { initial: 0, final: 1, total: 1 } } };
+    expect(entryMeterTotal(e, "MEE_FEED")).toBeNull();
+    expect(entryMeterTotal(e, "MEE_CONDENSATE")).toBeNull();
+  });
+
+  it("returns null when the entry has no water block at all (legacy record)", () => {
+    expect(entryMeterTotal(base(), "MEE_FEED")).toBeNull();
+    expect(entryEnergyTotal(base(), "ETP_POWER")).toBeNull();
+  });
+
+  it("distinguishes a genuine zero reading from a missing one", () => {
+    const e: EtpEntry = { ...base(), water: { MEE_REJECT: { initial: 4, final: 4, total: 0 } } };
+    expect(entryMeterTotal(e, "MEE_REJECT")).toBe(0);
+    expect(entryMeterTotal(e, "MEE_FEED")).toBeNull();
+  });
+
+  it("reads energy meters and rounds to the daily standard", () => {
+    const e: EtpEntry = { ...base(), energy: { ETP_POWER: { initial: 100, final: 251.55, total: 151.55 } } };
+    expect(entryEnergyTotal(e, "ETP_POWER")).toBe(151.6);
   });
 });

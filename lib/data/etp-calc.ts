@@ -122,6 +122,23 @@ export function withinRange(date: string, from?: string, to?: string): boolean {
   return true;
 }
 
+/**
+ * One meter's stored daily total for an entry, or null when that meter was never recorded.
+ * Null matters: entries filed before a meter existed must render blank, not a fabricated 0.
+ * MEE meters carry no `legacyKey`, so they are only reachable this way - never via a legacy
+ * scalar like `etpInlet`.
+ */
+export function entryMeterTotal(entry: EtpEntry, code: string): number | null {
+  const v = entry.water?.[code]?.total;
+  return v == null ? null : round1(Number(v));
+}
+
+/** As above, for an energy meter (Kwh). */
+export function entryEnergyTotal(entry: EtpEntry, code: string): number | null {
+  const v = entry.energy?.[code]?.total;
+  return v == null ? null : round1(Number(v));
+}
+
 /* ---------------- Carry-forward (master §5.3 / §9) ---------------- */
 
 export interface CarryForward {

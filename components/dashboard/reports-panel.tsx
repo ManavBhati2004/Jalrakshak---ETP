@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useDataStore } from "@/lib/store/data";
+import { entryMeterTotal } from "@/lib/data/etp-calc";
 import { toCSV, stampedName } from "@/lib/utils";
 
 function download(filename: string, content: string) {
@@ -52,6 +53,9 @@ export function ReportsPanel() {
     "RO Inlet (m³)": e.roInlet,
     "RO Reject (m³)": e.roReject,
     "RO Permeate (m³)": e.roPermeate,
+    "MEE Feed (m³)": entryMeterTotal(e, "MEE_FEED") ?? "",
+    "MEE Condensate (m³)": entryMeterTotal(e, "MEE_CONDENSATE") ?? "",
+    "MEE Reject (m³)": entryMeterTotal(e, "MEE_REJECT") ?? "",
     "Total Water Intake (m³)": e.totalWaterIntake,
     "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
     "Salt Dispatch (kg)": e.salt?.dispatch ?? "",

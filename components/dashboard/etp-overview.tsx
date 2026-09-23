@@ -16,11 +16,27 @@ import { DocumentsPanel } from "@/components/dashboard/documents-panel";
 import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { monthEntries, ledgerRollup, monthlyWaterTotal } from "@/lib/data/monthly";
+import { entryMeterTotal } from "@/lib/data/etp-calc";
 import { round1 } from "@/lib/data/etp-calc";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
 import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
 import { Zap } from "lucide-react";
 import type { EtpEntry } from "@/lib/types";
+
+/** MEE parameters as real, searchable, sortable table columns. */
+const MEE_COLUMNS: ColumnDef<EtpEntry>[] = [
+  { code: "MEE_FEED", header: "MEE Feed" },
+  { code: "MEE_CONDENSATE", header: "MEE Condensate" },
+  { code: "MEE_REJECT", header: "MEE Reject" },
+].map(({ code, header }) => ({
+  id: code,
+  header,
+  accessorFn: (e: EtpEntry) => entryMeterTotal(e, code) ?? "",
+  cell: ({ row }) => {
+    const v = entryMeterTotal(row.original, code);
+    return v == null ? <span className="text-sm text-muted-foreground">—</span> : <Num v={v} />;
+  },
+}));
 
 export function EtpOverview() {
   const industryId = useAuthStore((s) => s.industryId);
@@ -106,6 +122,9 @@ export function EtpOverview() {
     { accessorKey: "roInlet", header: "RO Inlet", cell: ({ row }) => <Num v={row.original.roInlet} /> },
     { accessorKey: "roReject", header: "RO Reject", cell: ({ row }) => <Num v={row.original.roReject} /> },
     { accessorKey: "roPermeate", header: "RO Permeate", cell: ({ row }) => <Num v={row.original.roPermeate} /> },
+    // MEE parameters. accessorFn (not just `cell`) so they are searchable AND sortable -
+    // a column defined with `cell` alone produces no row value for TanStack to work with.
+    ...MEE_COLUMNS,
     { id: "sludgeDispatch", header: "Sludge Disp. (kg)", cell: ({ row }) => <Num v={row.original.sludge?.dispatch ?? 0} unit="kg" /> },
     {
       accessorKey: "totalWaterIntake",
@@ -124,6 +143,7 @@ export function EtpOverview() {
       .map((c): ColumnDef<EtpEntry> => ({
         id: `custom-${c.id}`,
         header: c.name,
+        accessorFn: (e) => e.custom?.[c.id] ?? "",
         cell: ({ row }) => {
           const v = row.original.custom?.[c.id];
           return v == null ? <span className="text-sm text-muted-foreground">—</span> : <Num v={Number(v)} />;
@@ -143,12 +163,17 @@ export function EtpOverview() {
       "RO Inlet (m³)": e.roInlet,
       "RO Reject (m³)": e.roReject,
       "RO Permeate (m³)": e.roPermeate,
+      "MEE Feed (m³)": entryMeterTotal(e, "MEE_FEED") ?? "",
+      "MEE Condensate (m³)": entryMeterTotal(e, "MEE_CONDENSATE") ?? "",
+      "MEE Reject (m³)": entryMeterTotal(e, "MEE_REJECT") ?? "",
       "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
       "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
       "Energy (kWh)": e.energy ? round1(Object.values(e.energy).reduce((a, m) => a + Number(m?.total ?? 0), 0)) : "",
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,
+      // Operator-defined columns, appended last so the fixed headers keep their order.
+      ...Object.fromEntries((industry.customColumns ?? []).slice().sort((a, b) => a.order - b.order).map((c) => [c.name, e.custom?.[c.id] ?? ""])),
     }));
     download(stampedName(`jalrakshak-etp-${industry.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${industry.name}` });
