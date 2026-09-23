@@ -68,6 +68,26 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ---- Compliance documents (CTE / CTO / Authorization / Recent Notice) -----
+    // PDFs are stored OUTSIDE the tenant's `json` blob, in a subcollection, because that
+    // blob is rewritten in full on every store mutation and live-streamed to the regulator.
+    // Firestore rules do NOT cascade, so these blocks are required — without them every
+    // read and write here falls through to the default deny.
+    //
+    // Same isolation as the parent document: the owning operator manages its own unit's
+    // files; the Monitoring Body may read every unit's. An operator can neither read nor
+    // write another unit's documents — enforced server-side, not merely hidden in the UI.
+    match /industries/{industryId}/docs/{docType} {
+      allow read: if isAdmin() || ownsIndustry(industryId);
+      allow write: if isAdmin() || ownsIndustry(industryId);
+    }
+
+    // The PDF bytes, split across `Bytes` chunks to stay under the 1 MiB document cap.
+    match /industries/{industryId}/docs/{docType}/chunks/{chunkId} {
+      allow read: if isAdmin() || ownsIndustry(industryId);
+      allow write: if isAdmin() || ownsIndustry(industryId);
+    }
+
     // ---- Trusted-time ping ---------------------------------------------------
     // A signed-in user writes serverTimestamp() to their own doc and reads it
     // back to obtain trusted server time (used to detect device-clock tampering

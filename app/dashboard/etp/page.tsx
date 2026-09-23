@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { DataTable } from "@/components/dashboard/data-table";
+import { DocumentsPanel } from "@/components/dashboard/documents-panel";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
@@ -223,6 +224,9 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
           <PipelineFlow flow={buildEtpStageFlow(ind)} />
         </div>
       </div>
+
+      {/* compliance documents — read-only for the Monitoring Body, scoped to THIS unit */}
+      <DocumentsPanel industryId={ind.id} industryName={ind.name} canUpload={false} />
 
       {/* reading history & report */}
       <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">

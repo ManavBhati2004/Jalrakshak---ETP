@@ -12,6 +12,7 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Icon } from "@/components/shared/icon";
 import { Button } from "@/components/ui/button";
 import { useAuthStore } from "@/lib/store/auth";
+import { DocumentsPanel } from "@/components/dashboard/documents-panel";
 import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { monthEntries, ledgerRollup, monthlyWaterTotal } from "@/lib/data/monthly";
@@ -23,6 +24,7 @@ import type { EtpEntry } from "@/lib/types";
 
 export function EtpOverview() {
   const industryId = useAuthStore((s) => s.industryId);
+  const uid = useAuthStore((s) => s.uid);
   const industries = useDataStore((s) => s.industries);
   const etpEntries = useDataStore((s) => s.etpEntries);
   const alerts = useDataStore((s) => s.alerts);
@@ -263,6 +265,9 @@ export function EtpOverview() {
         </div>
         <PipelineFlow flow={buildEtpStageFlow(industry)} />
       </div>
+
+      {/* compliance documents — this unit uploads and maintains its own statutory PDFs */}
+      <DocumentsPanel industryId={industry.id} industryName={industry.name} canUpload uid={uid} />
 
       {/* alerts */}
       <div className="rounded-2xl border border-border bg-card p-5">

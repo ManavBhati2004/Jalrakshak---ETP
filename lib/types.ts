@@ -48,6 +48,39 @@ export interface CustomColumnDef {
   createdAt?: string;
 }
 
+/**
+ * The four RSPCB compliance documents a unit keeps on file. The codes are the Firestore
+ * document ids under `industries/{id}/docs/{docType}`, so they are permanent storage keys —
+ * rename the LABEL freely, never the code.
+ */
+export type EtpDocumentType = "CTE" | "CTO" | "AUTHORIZATION" | "NOTICE";
+
+export const ETP_DOCUMENT_TYPES: readonly { code: EtpDocumentType; label: string; hint: string }[] = [
+  { code: "CTE", label: "CTE — Consent to Establish", hint: "Consent to Establish certificate" },
+  { code: "CTO", label: "CTO — Consent to Operate", hint: "Consent to Operate certificate" },
+  { code: "AUTHORIZATION", label: "Authorization", hint: "Hazardous-waste authorisation" },
+  { code: "NOTICE", label: "Recent Notice", hint: "Most recent notice received" },
+] as const;
+
+/**
+ * Metadata for one uploaded PDF. The bytes themselves live in a `chunks` subcollection
+ * beneath this document — deliberately NOT inside the tenant's `json` blob, which is
+ * rewritten in full on every store mutation and live-streamed to the regulator.
+ */
+export interface EtpDocumentMeta {
+  docType: EtpDocumentType;
+  filename: string;
+  size: number; // bytes of the original PDF
+  contentType: string;
+  /** Identifies the current set of chunks; a replace writes a NEW id before dropping the old. */
+  uploadId: string;
+  chunkCount: number;
+  uploadedAt: string; // ISO
+  uploadedByUid: string;
+  /** Only a complete upload is assembled by readers — a torn upload is never served. */
+  complete: boolean;
+}
+
 export interface Industry {
   id: string;
   name: string;
