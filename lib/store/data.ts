@@ -132,6 +132,7 @@ interface DataState {
   registerIndustry: (input: RegisterInput) => Industry;
   setMonthlyProduction: (industryId: string, month: string, meters: number) => void;
   addCustomColumn: (industryId: string, name: string) => AddCustomColumnResult;
+  removeCustomColumn: (industryId: string, columnId: string) => void;
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
   resetData: () => void;
@@ -662,6 +663,21 @@ export const useDataStore = create<DataState>()(
         }));
         return { ok: true, column };
       },
+
+      /**
+       * Drops a column DEFINITION from the unit. Values already saved on historical entries are
+       * deliberately left untouched: removing a column must never rewrite filed regulatory data.
+       * The orphaned values simply stop being rendered, and re-adding a column of the same name
+       * gets a fresh id, so old values never reappear under a new column.
+       */
+      removeCustomColumn: (industryId, columnId) =>
+        set((s) => ({
+          industries: s.industries.map((i) =>
+            i.id === industryId
+              ? { ...i, customColumns: (i.customColumns ?? []).filter((c) => c.id !== columnId).map((c, idx) => ({ ...c, order: idx })) }
+              : i,
+          ),
+        })),
 
       setMonthlyProduction: (industryId, month, meters) =>
         set((s) => ({

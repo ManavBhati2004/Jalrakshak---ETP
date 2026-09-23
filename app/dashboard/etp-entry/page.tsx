@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, Check, Send, Droplets, Zap, Trash2, Lock, TriangleAlert, Ban, Save, FileWarning, Plus } from "lucide-react";
+import { Calculator, Check, Send, Droplets, Zap, Trash2, Lock, TriangleAlert, Ban, Save, FileWarning, Plus, Trash2 as TrashIcon, Lock as LockIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
@@ -62,6 +62,7 @@ export default function EtpEntryPage() {
   const etpEntries = useDataStore((s) => s.etpEntries);
   const submitEtpEntry = useDataStore((s) => s.submitEtpEntry);
   const addCustomColumn = useDataStore((s) => s.addCustomColumn);
+  const removeCustomColumn = useDataStore((s) => s.removeCustomColumn);
   const raiseTamperAlert = useDataStore((s) => s.raiseTamperAlert);
   const industry = industries.find((i) => i.id === industryId);
 
@@ -101,8 +102,20 @@ export default function EtpEntryPage() {
   }, [etpEntries, industryId, today]);
 
   const priorDay = carry?.priorDay;
-  const lockInitials = !!priorDay?.water; // carried from an immediately-previous day → locked
   const carrySource = priorDay ?? mostRecentPrior;
+  /**
+   * Initial readings are DERIVED, never typed. Lock them whenever there is any prior reading
+   * to carry from - including the gap case (an older entry exists but yesterday is missing),
+   * where the value used to be prefilled yet still editable.
+   *
+   * Each table is gated on ITS OWN readings: the energy lock previously keyed off the WATER
+   * meter's presence, so an entry carrying water but no energy left energy initials open.
+   *
+   * The first-ever entry stays editable on purpose - that is the baseline reading, and there
+   * is nothing to derive it from. Inventing a 0 there would be a misleading initial value.
+   */
+  const lockWaterInitials = !!carrySource?.water;
+  const lockEnergyInitials = !!carrySource?.energy;
 
   // Prefill Initial readings / opening balances from the carry source. Prefilled initials go
   // through numFilter so an oversized legacy reading can't seed an out-of-range value. Keyed on
@@ -178,6 +191,23 @@ export default function EtpEntryPage() {
     if (edited !== undefined) return edited;
     const saved = todayEntry?.custom?.[id];
     return saved == null ? "" : String(saved);
+  };
+
+  /**
+   * Drops the column definition only. Values already filed on historical entries are left
+   * untouched - removing a column must never rewrite submitted regulatory data. They simply
+   * stop being rendered, and a re-added column gets a fresh id so old values never resurface.
+   */
+  const onRemoveColumn = (id: string, name: string) => {
+    if (!industryId) return;
+    if (!window.confirm(`Remove the column "${name}"? Values already saved on past entries are kept but no longer shown.`)) return;
+    removeCustomColumn(industryId, id);
+    setCustom((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    toast.success("Column removed", { description: name });
   };
 
   const onAddColumn = () => {
@@ -298,8 +328,8 @@ export default function EtpEntryPage() {
           <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">Today · locked</span>
         </div>
         <p className="text-xs text-muted-foreground">
-          {lockInitials
-            ? "Initial readings & opening balances carried forward from yesterday (locked)."
+          {lockWaterInitials || lockEnergyInitials
+            ? "Initial readings & opening balances are carried forward from your last entry and cannot be edited."
             : carry?.isFirstEver
               ? "First entry — enter each meter's current reading as the Initial (baseline)."
               : "Yesterday's entry is missing — Initials are prefilled from your last entry; submission needs a continuity override."}
@@ -342,7 +372,7 @@ export default function EtpEntryPage() {
               state={water}
               rows={waterRows}
               onChange={setMeter("water")}
-              readonlyInitial={lockInitials}
+              readonlyInitial={lockWaterInitials}
               grandTotal={groupTotals[g.id]}
             />
           ))}
@@ -361,7 +391,7 @@ export default function EtpEntryPage() {
             state={energy}
             rows={energyRows}
             onChange={setMeter("energy")}
-            readonlyInitial={lockInitials}
+            readonlyInitial={lockEnergyInitials}
           />
         </div>
         <RemarkField value={energyRemark} onChange={setEnergyRemark} />
@@ -435,6 +465,7 @@ export default function EtpEntryPage() {
                   <th className="border-b border-border pb-2 pr-3 font-medium">#</th>
                   <th className="border-b border-border pb-2 pr-3 font-medium">Column</th>
                   <th className="border-b border-border pb-2 font-medium">Value</th>
+                  <th className="border-b border-border pb-2 font-medium"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -452,6 +483,18 @@ export default function EtpEntryPage() {
                         className={inputCls + " max-w-40"}
                         placeholder="—"
                       />
+                    </td>
+                    <td className="py-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove ${c.name}`}
+                        title={`Remove ${c.name}`}
+                        onClick={() => onRemoveColumn(c.id, c.name)}
+                        className="text-muted-foreground hover:text-red-600"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -523,6 +566,9 @@ export default function EtpEntryPage() {
   );
 }
 
+/** Shown on every locked Initial field so the derivation is never a mystery. */
+const LOCKED_INITIAL_HINT = "Automatically populated from the previous final reading.";
+
 /* ---------------- meter table ---------------- */
 function MeterTable({
   caption,
@@ -547,13 +593,23 @@ function MeterTable({
   return (
     <div>
       <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{caption}</p>
+      {readonlyInitial ? (
+        <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <LockIcon className="h-3 w-3" aria-hidden /> {LOCKED_INITIAL_HINT}
+        </p>
+      ) : null}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[560px] border-collapse text-sm">
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               <th className="pb-2 pr-3 font-medium">#</th>
               <th className="pb-2 pr-3 font-medium">Meter</th>
-              <th className="w-32 pb-2 pr-3 font-medium">Initial Reading</th>
+              <th className="w-36 pb-2 pr-3 font-medium">
+                <span className="inline-flex items-center gap-1">
+                  Initial Reading
+                  {readonlyInitial ? <LockIcon className="h-3 w-3 text-muted-foreground" aria-hidden /> : null}
+                </span>
+              </th>
               <th className="w-32 pb-2 pr-3 font-medium">Final Reading</th>
               <th className="w-24 pb-2 font-medium">Total ({unit})</th>
             </tr>
@@ -567,14 +623,22 @@ function MeterTable({
                   <td className="py-2 pr-3 text-muted-foreground">{i + 1}</td>
                   <td className="py-2 pr-3 text-foreground">{m.label}</td>
                   <td className="py-2 pr-3">
-                    <input
-                      inputMode="decimal"
-                      value={state[m.code].initial}
-                      onChange={(e) => onChange(m.code, "initial", e.target.value)}
-                      readOnly={readonlyInitial}
-                      className={`${cellCls}${readonlyInitial ? " bg-muted/40 text-muted-foreground" : ""}`}
-                      placeholder="0"
-                    />
+                    <div className="relative">
+                      <input
+                        inputMode="decimal"
+                        value={state[m.code].initial}
+                        onChange={(e) => onChange(m.code, "initial", e.target.value)}
+                        readOnly={readonlyInitial}
+                        aria-readonly={readonlyInitial}
+                        tabIndex={readonlyInitial ? -1 : undefined}
+                        title={readonlyInitial ? LOCKED_INITIAL_HINT : undefined}
+                        className={`${cellCls}${readonlyInitial ? " cursor-not-allowed bg-muted/50 pr-7 text-muted-foreground" : ""}`}
+                        placeholder="0"
+                      />
+                      {readonlyInitial ? (
+                        <LockIcon className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                      ) : null}
+                    </div>
                   </td>
                   <td className="py-2 pr-3">
                     <input
