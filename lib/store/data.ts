@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { firestoreStorage, type StoreData } from "@/lib/data/firestore-storage";
+import { DEFAULT_CUSTOM_COLUMN_UNIT } from "@/lib/types";
 import type {
   Industry,
   FlowMeterReading,
@@ -107,8 +108,11 @@ export interface EtpEntryInput {
   energyRemark: string;
   sludge: LedgerInput;
   salt: LedgerInput;
-  /** Values for the unit's custom columns, keyed by CustomColumnDef.id (optional). */
-  custom?: Record<string, number | null>;
+  /**
+   * Per-custom-column Initial/Final, keyed by CustomColumnDef.id. `null` means the column is
+   * defined but the operator recorded nothing today - it files a blank, never a 0.
+   */
+  customMeters?: Record<string, MeterInput | null>;
   overrideReason?: string; // reason recorded when a missing-prior-day continuity override was authorised
 }
 
@@ -131,7 +135,7 @@ interface DataState {
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
   setMonthlyProduction: (industryId: string, month: string, meters: number) => void;
-  addCustomColumn: (industryId: string, name: string) => AddCustomColumnResult;
+  addCustomColumn: (industryId: string, name: string, unit?: string) => AddCustomColumnResult;
   removeCustomColumn: (industryId: string, columnId: string) => void;
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
@@ -272,6 +276,31 @@ export const useDataStore = create<DataState>()(
         const energy: Record<string, MeterReading> = {};
         for (const code of Object.keys(input.energy)) energy[code] = toMeterReading(input.energy[code].initial, input.energy[code].final);
         const waterTotals = groupGrandTotals(water);
+
+        /**
+         * Custom columns are meters too, so their daily figure is derived, never typed: the
+         * `custom` scalar is computed from Initial/Final exactly as the legacy water scalars
+         * above are computed from `water`. That keeps every existing reader working and means a
+         * scalar-only historical entry needs no special case downstream.
+         *
+         * A column the operator left blank files `custom[id] = null` and NO `customMeters` key -
+         * never `{initial: X, final: 0}`, which would report a fabricated (often negative) total.
+         */
+        let custom: Record<string, number | null> | undefined;
+        let customMeters: Record<string, MeterReading> | undefined;
+        if (input.customMeters) {
+          custom = {};
+          customMeters = {};
+          for (const [id, mi] of Object.entries(input.customMeters)) {
+            if (!mi) {
+              custom[id] = null;
+              continue;
+            }
+            const reading = toMeterReading(mi.initial, mi.final);
+            customMeters[id] = reading;
+            custom[id] = reading.total;
+          }
+        }
         const sludge = toLedger(input.sludge);
         const salt = toLedger(input.salt);
 
@@ -297,6 +326,13 @@ export const useDataStore = create<DataState>()(
           return { entry: prior, alerts: [] };
         }
 
+        // The entry is rebuilt from scratch, so anything this save does not send would be
+        // silently deleted. Fall back to what is already filed for this day rather than dropping
+        // it - that is the only thing protecting values recorded before custom columns had meters.
+        const nonEmpty = <T extends object>(o: T | undefined) => (o && Object.keys(o).length ? o : undefined);
+        const keptCustom = nonEmpty(custom) ?? nonEmpty(prior?.custom);
+        const keptCustomMeters = nonEmpty(customMeters) ?? nonEmpty(prior?.customMeters);
+
         const entry: EtpEntry = {
           id,
           industryId: input.industryId,
@@ -321,7 +357,8 @@ export const useDataStore = create<DataState>()(
           energyRemark: input.energyRemark,
           sludge,
           salt,
-          ...(input.custom ? { custom: input.custom } : {}),
+          ...(keptCustom ? { custom: keptCustom } : {}),
+          ...(keptCustomMeters ? { customMeters: keptCustomMeters } : {}),
           entryStatus: input.status,
           overrideReason: input.overrideReason,
         };
@@ -641,7 +678,7 @@ export const useDataStore = create<DataState>()(
        * record, so they are tenant-scoped automatically. Names are display-only; the permanent
        * key is the generated `id`, so a name can never break saved values.
        */
-      addCustomColumn: (industryId, name) => {
+      addCustomColumn: (industryId, name, unit) => {
         const clean = name.trim();
         if (!clean) return { ok: false, error: "Column name is required." };
         if (clean.length > 60) return { ok: false, error: "Column name must be 60 characters or fewer." };
@@ -652,11 +689,13 @@ export const useDataStore = create<DataState>()(
         if (!ind) return { ok: false, error: "Unit not found." };
         const existing = ind.customColumns ?? [];
         if (existing.some((c) => c.name.trim().toLowerCase() === lower)) return { ok: false, error: "A column with that name already exists." };
+        const cleanUnit = (unit ?? "").trim().slice(0, 12);
         const column: CustomColumnDef = {
           id: `CC-${Date.now().toString(36).toUpperCase()}`,
           name: clean,
           order: existing.length,
           createdAt: new Date().toISOString(),
+          unit: cleanUnit === "" ? DEFAULT_CUSTOM_COLUMN_UNIT : cleanUnit,
         };
         set((s) => ({
           industries: s.industries.map((i) => (i.id === industryId ? { ...i, customColumns: [...existing, column] } : i)),

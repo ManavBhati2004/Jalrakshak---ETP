@@ -4,7 +4,7 @@
    client Excel; behaviour follows the master prompt (FE/CR/JALRAKSHAK/001 R2).
    ============================================================ */
 
-import type { EtpEntry, MeterReading, HwLedger } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type MeterReading, type HwLedger } from "@/lib/types";
 import {
   WATER_METERS,
   RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON,
@@ -136,6 +136,57 @@ export function entryMeterTotal(entry: EtpEntry, code: string): number | null {
 /** As above, for an energy meter (Kwh). */
 export function entryEnergyTotal(entry: EtpEntry, code: string): number | null {
   const v = entry.energy?.[code]?.total;
+  return v == null ? null : round1(Number(v));
+}
+
+/* ---------------- Custom columns (operator-defined meters) ---------------- */
+
+/** Unit for a custom column. Definitions predating units fall back to the water sections' M3. */
+export function customColumnUnit(col: { unit?: string }): string {
+  const u = (col.unit ?? "").trim();
+  return u === "" ? DEFAULT_CUSTOM_COLUMN_UNIT : u;
+}
+
+/**
+ * A custom column's daily total. Prefers the meter reading; falls back to the legacy scalar
+ * filed before custom columns became meters, so historical values never disappear from a
+ * report. Null — never 0 — when the column was not recorded that day.
+ */
+export function entryCustomTotal(entry: EtpEntry, columnId: string): number | null {
+  const m = entry.customMeters?.[columnId]?.total;
+  if (m != null) return round1(Number(m));
+  const legacy = entry.custom?.[columnId];
+  return legacy == null ? null : round1(Number(legacy));
+}
+
+/** A custom column's stored Initial/Final for a day, or null when it holds no meter reading. */
+export function entryCustomReading(entry: EtpEntry, columnId: string): MeterReading | null {
+  return entry.customMeters?.[columnId] ?? null;
+}
+
+/**
+ * The Final to carry into today's Initial for one custom column, or null when there is none.
+ *
+ * Deliberately NOT `mostRecentPrior`: that helper keeps drafts and rejected entries, so a
+ * draft's Final could become tomorrow's LOCKED Initial. It also scans per column rather than
+ * per entry, because a column left blank files no reading at all — gaps are normal, and the
+ * baseline is the last day that actually recorded this meter.
+ *
+ * A legacy scalar is never a carry source: it is a daily quantity, not a meter position, so
+ * reading it as one would fabricate a baseline.
+ */
+export function carriedCustomFinal(entries: EtpEntry[], industryId: string, date: string, columnId: string): number | null {
+  const prior = entries
+    .filter(
+      (e) =>
+        e.industryId === industryId &&
+        e.date < date &&
+        e.entryStatus !== "DRAFT" &&
+        e.status !== "rejected" &&
+        e.customMeters?.[columnId]?.final != null,
+    )
+    .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+  const v = prior?.customMeters?.[columnId]?.final;
   return v == null ? null : round1(Number(v));
 }
 

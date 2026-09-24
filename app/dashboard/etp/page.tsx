@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { DataTable } from "@/components/dashboard/data-table";
 import { DocumentsPanel } from "@/components/dashboard/documents-panel";
-import { entryMeterTotal } from "@/lib/data/etp-calc";
+import { customColumnUnit, entryCustomTotal, entryMeterTotal } from "@/lib/data/etp-calc";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
@@ -163,11 +163,12 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
       .sort((a, b) => a.order - b.order)
       .map((c): ColumnDef<EtpEntry> => ({
         id: `custom-${c.id}`,
-        header: c.name,
-        accessorFn: (e) => e.custom?.[c.id] ?? "",
+        header: `${c.name} (${customColumnUnit(c)})`,
+        // Via entryCustomTotal so values filed before custom columns became meters still show.
+        accessorFn: (e) => entryCustomTotal(e, c.id) ?? "",
         cell: ({ row }) => {
-          const v = row.original.custom?.[c.id];
-          return v == null ? <span className="text-sm text-muted-foreground">—</span> : <NumCell v={Number(v)} />;
+          const v = entryCustomTotal(row.original, c.id);
+          return v == null ? <span className="text-sm text-muted-foreground">—</span> : <NumCell v={v} unit={customColumnUnit(c)} />;
         },
       })),
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
@@ -192,7 +193,12 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,
-      ...Object.fromEntries((ind.customColumns ?? []).slice().sort((a, b) => a.order - b.order).map((c) => [c.name, e.custom?.[c.id] ?? ""])),
+      ...Object.fromEntries(
+        (ind.customColumns ?? [])
+          .slice()
+          .sort((a, b) => a.order - b.order)
+          .map((c) => [`${c.name} (${customColumnUnit(c)})`, entryCustomTotal(e, c.id) ?? ""]),
+      ),
     }));
     download(stampedName(`jalrakshak-etp-${ind.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${ind.name}` });
@@ -299,10 +305,10 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
   );
 }
 
-function NumCell({ v }: { v: number }) {
+function NumCell({ v, unit = "m³" }: { v: number; unit?: string }) {
   return (
     <span className="whitespace-nowrap font-mono text-sm text-foreground">
-      {formatNumber(v)} <span className="text-xs font-normal text-muted-foreground">m³</span>
+      {formatNumber(v)} <span className="text-xs font-normal text-muted-foreground">{unit}</span>
     </span>
   );
 }

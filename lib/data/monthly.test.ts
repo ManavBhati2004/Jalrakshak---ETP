@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { monthEntries, monthlyWaterTotal, monthlyWaterTotalOf, TRADE_EFFLUENT_RECYCLED_CODES, ledgerRollup, buildMonthlyCompliance, daysInMonth } from "./monthly";
+import { monthEntries, monthlyWaterTotal, monthlyWaterTotalOf, monthlyCustomTotal, TRADE_EFFLUENT_RECYCLED_CODES, ledgerRollup, buildMonthlyCompliance, daysInMonth } from "./monthly";
 import type { EtpEntry } from "@/lib/types";
 
 const mk = (
@@ -208,5 +208,41 @@ describe("Dashboard MEE metrics — per-meter monthly sums", () => {
       0,
     );
     expect([s.meeFeedM3, s.meeCondensateM3, s.meeRejectM3]).toEqual([10, 6, 4]);
+  });
+});
+
+describe("monthlyCustomTotal — custom columns roll up across both storage eras", () => {
+  const cc = (date: string, over: Partial<EtpEntry>): EtpEntry => ({ ...mk(date), ...over });
+
+  it("sums meter-era days", () => {
+    const monthly = [
+      cc("2026-07-01", { customMeters: { "CC-A": { initial: 0, final: 10, total: 10 } }, custom: { "CC-A": 10 } }),
+      cc("2026-07-02", { customMeters: { "CC-A": { initial: 10, final: 25.5, total: 15.5 } }, custom: { "CC-A": 15.5 } }),
+    ];
+    expect(monthlyCustomTotal(monthly, "CC-A")).toBe(25.5);
+  });
+
+  it("counts values filed before the column became a meter", () => {
+    const monthly = [
+      cc("2026-07-01", { custom: { "CC-A": 12 } }),
+      cc("2026-07-02", { customMeters: { "CC-A": { initial: 0, final: 8, total: 8 } }, custom: { "CC-A": 8 } }),
+    ];
+    expect(monthlyCustomTotal(monthly, "CC-A")).toBe(20);
+  });
+
+  it("returns null — NOT 0 — when no day recorded the column", () => {
+    // An unused or newly added column must report blank in the workbook, never a measured zero.
+    expect(monthlyCustomTotal([cc("2026-07-01", {})], "CC-A")).toBeNull();
+    expect(monthlyCustomTotal([], "CC-A")).toBeNull();
+    expect(monthlyCustomTotal([cc("2026-07-01", { custom: { "CC-A": null } })], "CC-A")).toBeNull();
+  });
+
+  it("a month of genuine zeros totals 0, which is not the same as blank", () => {
+    const monthly = [cc("2026-07-01", { customMeters: { "CC-A": { initial: 5, final: 5, total: 0 } } })];
+    expect(monthlyCustomTotal(monthly, "CC-A")).toBe(0);
+  });
+
+  it("ignores days that recorded a different column", () => {
+    expect(monthlyCustomTotal([cc("2026-07-01", { custom: { "CC-B": 7 } })], "CC-A")).toBeNull();
   });
 });

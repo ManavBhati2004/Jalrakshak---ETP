@@ -8,8 +8,8 @@
 
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
-import { round1, kgToMt, toCanonicalKg } from "@/lib/data/etp-calc";
-import { monthEntries, ledgerRollup, monthlyWaterTotal, monthlyWaterTotalOf, TRADE_EFFLUENT_RECYCLED_CODES, daysInMonth, manifestRows } from "@/lib/data/monthly";
+import { round1, kgToMt, toCanonicalKg, customColumnUnit, entryCustomReading, entryCustomTotal } from "@/lib/data/etp-calc";
+import { monthEntries, ledgerRollup, monthlyWaterTotal, monthlyWaterTotalOf, monthlyCustomTotal, TRADE_EFFLUENT_RECYCLED_CODES, daysInMonth, manifestRows } from "@/lib/data/monthly";
 
 type XLSXModule = typeof import("xlsx-js-style");
 type Section = { label: string; code: string };
@@ -335,44 +335,55 @@ function complianceSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry
 }
 
 /* ---------- custom-columns sheet (operator-defined, dynamic) ----------
-   Deliberately a SEPARATE sheet. Sheets 1-6 reproduce the regulator's prescribed
-   template exactly, and injecting user-named columns into them would break that
-   fidelity. Custom columns are bare scalars, so they also cannot fit meterSheet's
-   fixed Time/Initial/Final/Total quartet. Omitted entirely when the unit has none. */
+   Deliberately a SEPARATE sheet rather than a call into meterSheet. Sheets 1-6 reproduce
+   the regulator's prescribed template exactly and must stay byte-identical, and meterSheet
+   differs from what a user-defined parameter needs in three ways that matter: it emits a
+   Grand Total across sections (meaningless across unrelated parameters with different
+   units), it carries a per-sheet unit (custom columns each carry their own), and it writes
+   a literal 0 for a section with no data where this sheet must write a blank.
+
+   Layout mirrors meterSheet otherwise: a merged section band per column over an
+   Initial/Final/Total triple. Omitted entirely when the unit has none. */
 function customColumnSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], month: string) {
   const cols = [...(industry.customColumns ?? [])].sort((a, b) => a.order - b.order);
-  const totalCols = 1 + cols.length;
+  const totalCols = 1 + cols.length * 3;
   const rows: Cell[][] = [];
 
-  rows.push(["Custom Columns"]);
-  rows.push(["Name", industry.name]);
-  rows.push(["Address", industry.address ?? industry.area ?? ""]);
-  rows.push(["MIS ID", industry.misId ?? ""]);
-  rows.push(["Date/Month/Year", ...cols.map((c) => c.name)]);
+  rows.push(["Custom Columns"]); // 0
+  rows.push(["Name", industry.name]); // 1
+  rows.push(["Address", industry.address ?? industry.area ?? ""]); // 2
+  rows.push(["MIS ID", industry.misId ?? ""]); // 3
+
+  const sectionRow: Cell[] = new Array(totalCols).fill("");
+  sectionRow[0] = "Section";
+  cols.forEach((c, i) => (sectionRow[1 + i * 3] = c.name));
+  rows.push(sectionRow); // 4
+
+  const head: Cell[] = ["Date/Month/Year"];
+  for (const c of cols) {
+    const u = customColumnUnit(c);
+    head.push(`Initial Reading in ${u}`, `Final Reading in ${u}`, `Total in ${u}`);
+  }
+  rows.push(head); // 5
 
   const days = daysInMonth(month);
-  const sums = new Array(cols.length).fill(0);
-  const seen = new Array(cols.length).fill(false);
   for (let d = 1; d <= days; d++) {
     const date = `${month}-${String(d).padStart(2, "0")}`;
     const e = monthly.find((x) => x.date === date);
     const row: Cell[] = [date];
-    cols.forEach((c, i) => {
-      const v = e?.custom?.[c.id];
-      // A day with no value stays EMPTY rather than 0 - entries filed before the
-      // column existed must not be reported as a measured zero.
-      if (v == null) {
-        row.push("");
-      } else {
-        row.push(v);
-        sums[i] = round1(sums[i] + Number(v));
-        seen[i] = true;
-      }
-    });
+    for (const c of cols) {
+      const m = e ? entryCustomReading(e, c.id) : null;
+      const total = e ? entryCustomTotal(e, c.id) : null;
+      // A day with no reading stays EMPTY rather than 0. A day filed before this column
+      // recorded Initial/Final has a total but no meter positions - those two cells stay
+      // blank rather than inventing a baseline that was never measured.
+      row.push(m?.initial ?? "", m?.final ?? "", total ?? "");
+    }
     rows.push(row);
   }
 
-  const totalRow: Cell[] = ["Monthly Total", ...sums.map((v, i) => (seen[i] ? v : ""))];
+  const totalRow: Cell[] = ["Monthly Total"];
+  for (const c of cols) totalRow.push("", "", monthlyCustomTotal(monthly, c.id) ?? "");
   rows.push(totalRow);
 
   const ws = XLSX.utils.aoa_to_sheet(rows) as Record<string, unknown>;
@@ -381,8 +392,9 @@ function customColumnSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEnt
     { s: { r: 1, c: 1 }, e: { r: 1, c: Math.max(totalCols - 1, 1) } },
     { s: { r: 2, c: 1 }, e: { r: 2, c: Math.max(totalCols - 1, 1) } },
     { s: { r: 3, c: 1 }, e: { r: 3, c: Math.max(totalCols - 1, 1) } },
+    ...cols.map((_, i) => ({ s: { r: 4, c: 1 + i * 3 }, e: { r: 4, c: 1 + i * 3 + 2 } })),
   ];
-  ws["!cols"] = new Array(totalCols).fill(0).map((_, c) => ({ wch: c === 0 ? 16 : 18 }));
+  ws["!cols"] = new Array(totalCols).fill(0).map((_, c) => ({ wch: c === 0 ? 16 : 14 }));
 
   const lastRow = rows.length - 1;
   for (let r = 0; r < rows.length; r++) {
@@ -390,7 +402,8 @@ function customColumnSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEnt
       let style: object = S.cell;
       if (r === 0) style = S.title;
       else if (r >= 1 && r <= 3) style = c === 0 ? S.label : S.value;
-      else if (r === 4) style = S.header;
+      else if (r === 4) style = c === 0 ? S.label : S.section;
+      else if (r === 5) style = S.header;
       else if (r === lastRow) style = S.total;
       setStyle(XLSX, ws, r, c, style);
     }

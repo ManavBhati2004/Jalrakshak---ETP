@@ -18,6 +18,12 @@ import {
   dateRangeValid,
   entryMeterTotal,
   entryEnergyTotal,
+  entryCustomTotal,
+  entryCustomReading,
+  carriedCustomFinal,
+  customColumnUnit,
+  meterRowStatus,
+  toMeterReading,
 } from "./etp-calc";
 import type { EtpEntry } from "@/lib/types";
 
@@ -270,5 +276,130 @@ describe("entryMeterTotal / entryEnergyTotal — MEE and energy accessors", () =
   it("reads energy meters and rounds to the daily standard", () => {
     const e: EtpEntry = { ...base(), energy: { ETP_POWER: { initial: 100, final: 251.55, total: 151.55 } } };
     expect(entryEnergyTotal(e, "ETP_POWER")).toBe(151.6);
+  });
+});
+
+/* ============================================================================
+   Custom columns as operator-defined METERS. Two eras coexist forever: entries
+   filed before the change hold only a scalar daily total, newer ones hold a full
+   Initial/Final/Total. Nothing may fabricate an Initial for the older ones, and
+   nothing may report an unrecorded column as a measured 0.
+   ========================================================================== */
+describe("custom columns — meter accessors across both storage eras", () => {
+  const base = (over: Partial<EtpEntry> = {}): EtpEntry => ({
+    id: "E-1", industryId: "IND-1", industryName: "X", date: "2026-07-10",
+    freshWaterConsumption: 0, etpInlet: 0, etpOutlet: 0, etpReuse: 0, roInlet: 0, roReject: 0, roPermeate: 0,
+    sludgeToTSDF: 0, totalWaterIntake: 0, unit: "KL", status: "approved", submittedAt: "x", entryStatus: "SUBMITTED",
+    ...over,
+  });
+
+  it("reads the meter total when the column was filed as a meter", () => {
+    const e = base({ customMeters: { "CC-A": { initial: 120, final: 145.5, total: 25.5 } }, custom: { "CC-A": 25.5 } });
+    expect(entryCustomTotal(e, "CC-A")).toBe(25.5);
+    expect(entryCustomReading(e, "CC-A")).toEqual({ initial: 120, final: 145.5, total: 25.5 });
+  });
+
+  it("falls back to the legacy scalar so already-filed values never vanish", () => {
+    // The pre-change shape: one typed number, no Initial/Final. This is live production data.
+    const e = base({ custom: { "CC-A": 42 } });
+    expect(entryCustomTotal(e, "CC-A")).toBe(42);
+    // ...but it exposes NO meter reading: those positions were never measured.
+    expect(entryCustomReading(e, "CC-A")).toBeNull();
+  });
+
+  it("prefers the meter total over a stale scalar", () => {
+    const e = base({ customMeters: { "CC-A": { initial: 10, final: 30, total: 20 } }, custom: { "CC-A": 999 } });
+    expect(entryCustomTotal(e, "CC-A")).toBe(20);
+  });
+
+  it("returns null — NOT 0 — for a column the day never recorded", () => {
+    expect(entryCustomTotal(base(), "CC-A")).toBeNull();
+    expect(entryCustomTotal(base({ custom: { "CC-A": null } }), "CC-A")).toBeNull();
+    expect(entryCustomTotal(base({ customMeters: {} }), "CC-A")).toBeNull();
+    expect(entryCustomTotal(base({ custom: { "CC-B": 5 } }), "CC-A")).toBeNull();
+  });
+
+  it("distinguishes a genuine zero reading from a missing one", () => {
+    const e = base({ customMeters: { "CC-A": { initial: 4, final: 4, total: 0 } }, custom: { "CC-A": 0 } });
+    expect(entryCustomTotal(e, "CC-A")).toBe(0);
+    expect(entryCustomTotal(e, "CC-B")).toBeNull();
+  });
+
+  it("rounds to the one-decimal daily standard", () => {
+    expect(entryCustomTotal(base({ custom: { "CC-A": 151.55 } }), "CC-A")).toBe(151.6);
+  });
+});
+
+describe("carriedCustomFinal — per-column carry-forward baseline", () => {
+  const day = (date: string, over: Partial<EtpEntry> = {}): EtpEntry => ({
+    id: `E-${date}`, industryId: "IND-1", industryName: "X", date,
+    freshWaterConsumption: 0, etpInlet: 0, etpOutlet: 0, etpReuse: 0, roInlet: 0, roReject: 0, roPermeate: 0,
+    sludgeToTSDF: 0, totalWaterIntake: 0, unit: "KL", status: "approved", submittedAt: "x", entryStatus: "SUBMITTED",
+    ...over,
+  });
+  const withMeter = (date: string, final: number, over: Partial<EtpEntry> = {}) =>
+    day(date, { customMeters: { "CC-A": { initial: 0, final, total: final } }, ...over });
+
+  it("carries the previous day's Final", () => {
+    const entries = [withMeter("2026-07-09", 145.5)];
+    expect(carriedCustomFinal(entries, "IND-1", "2026-07-10", "CC-A")).toBe(145.5);
+  });
+
+  it("skips days that recorded nothing for THIS column", () => {
+    // A blank column files no reading, so gaps are normal - the baseline is the last real one.
+    const entries = [withMeter("2026-07-05", 100), day("2026-07-08"), day("2026-07-09")];
+    expect(carriedCustomFinal(entries, "IND-1", "2026-07-10", "CC-A")).toBe(100);
+  });
+
+  it("never carries from a legacy scalar — that is a daily quantity, not a meter position", () => {
+    const entries = [day("2026-07-09", { custom: { "CC-A": 42 } })];
+    expect(carriedCustomFinal(entries, "IND-1", "2026-07-10", "CC-A")).toBeNull();
+  });
+
+  it("ignores drafts and rejected entries", () => {
+    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { entryStatus: "DRAFT" })], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { status: "rejected" })], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+  });
+
+  it("never reads another unit's entries, or today's, or the future", () => {
+    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { industryId: "IND-2" })], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+    expect(carriedCustomFinal([withMeter("2026-07-10", 80)], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+    expect(carriedCustomFinal([withMeter("2026-07-11", 80)], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+  });
+
+  it("returns null for the first-ever entry and for an unknown column", () => {
+    expect(carriedCustomFinal([], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+    expect(carriedCustomFinal([withMeter("2026-07-09", 80)], "IND-1", "2026-07-10", "CC-ZZZ")).toBeNull();
+  });
+
+  it("a genuine 0 Final is still a valid baseline", () => {
+    expect(carriedCustomFinal([withMeter("2026-07-09", 0)], "IND-1", "2026-07-10", "CC-A")).toBe(0);
+  });
+});
+
+describe("custom columns share the meter row rules and unit defaulting", () => {
+  it("Total = Final − Initial, via the same builder the water meters use", () => {
+    expect(toMeterReading(120, 145.5)).toEqual({ initial: 120, final: 145.5, total: 25.5 });
+  });
+
+  it("a carried Initial with a blank Final is incomplete, not an error", () => {
+    // Custom columns are deliberately excluded from the submit-blocking `incomplete` gate:
+    // the Initial is auto-carried, so this is the state of every untouched column.
+    expect(meterRowStatus("120", "")).toMatchObject({ incomplete: true, belowInitial: false });
+  });
+
+  it("a Final below the Initial is a real error", () => {
+    expect(meterRowStatus("120", "119")).toMatchObject({ belowInitial: true });
+  });
+
+  it("both blank is neither", () => {
+    expect(meterRowStatus("", "")).toMatchObject({ incomplete: false, belowInitial: false, total: 0 });
+  });
+
+  it("defaults the unit for columns defined before units existed", () => {
+    expect(customColumnUnit({})).toBe("M3");
+    expect(customColumnUnit({ unit: "" })).toBe("M3");
+    expect(customColumnUnit({ unit: "  " })).toBe("M3");
+    expect(customColumnUnit({ unit: "Kwh" })).toBe("Kwh");
   });
 });

@@ -46,7 +46,13 @@ export interface CustomColumnDef {
   name: string;
   order: number;
   createdAt?: string;
+  /** Unit shown in the Total header and the Excel headers. Absent on columns defined
+   *  before units existed — read it through `customColumnUnit()`, never directly. */
+  unit?: string;
 }
+
+/** Unit for a custom column, defaulting to the water sections' M3 for older definitions. */
+export const DEFAULT_CUSTOM_COLUMN_UNIT = "M3";
 
 /**
  * The four RSPCB compliance documents a unit keeps on file. The codes are the Firestore
@@ -206,10 +212,23 @@ export interface EtpEntry {
   sludge?: HwLedger; // ETP sludge (kg)
   salt?: HwLedger; // ATFD/PAN salt, MEE section (kg)
   /**
-   * Values for the unit's custom columns, keyed by `CustomColumnDef.id`. Optional and sparse:
-   * historical entries predate any column and stay valid - a missing key renders blank, NOT 0.
+   * Daily TOTAL per custom column, keyed by `CustomColumnDef.id`. Derived from `customMeters`
+   * (Final − Initial) exactly as the legacy water scalars above are derived from `water`, so
+   * every existing dashboard/CSV/Excel reader keeps working unchanged. On entries filed before
+   * custom columns became meters this holds the raw value the operator typed.
+   *
+   * Optional and sparse: historical entries predate any column and stay valid - a missing key
+   * renders blank, NOT 0.
    */
   custom?: Record<string, number | null>;
+  /**
+   * Initial/Final/Total per custom column, keyed by `CustomColumnDef.id` - the same shape the
+   * water and energy sections use. Sparse: a column the operator left blank that day has NO
+   * key here, so nothing is ever reported as a measured zero. Entries filed before this key
+   * existed carry only the `custom` scalar; their Initial/Final are genuinely unknown and must
+   * stay blank rather than be back-filled.
+   */
+  customMeters?: Record<string, MeterReading>;
   entryStatus?: EntryStatus; // DRAFT | SUBMITTED (append-only submit workflow)
   overrideReason?: string; // audit note when a missing-prior-day continuity override was authorised
 }

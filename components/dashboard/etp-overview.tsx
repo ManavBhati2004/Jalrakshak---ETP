@@ -16,7 +16,7 @@ import { DocumentsPanel } from "@/components/dashboard/documents-panel";
 import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { monthEntries, ledgerRollup, monthlyWaterTotal } from "@/lib/data/monthly";
-import { entryMeterTotal } from "@/lib/data/etp-calc";
+import { customColumnUnit, entryCustomTotal, entryMeterTotal } from "@/lib/data/etp-calc";
 import { round1 } from "@/lib/data/etp-calc";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
 import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
@@ -142,11 +142,13 @@ export function EtpOverview() {
       .sort((a, b) => a.order - b.order)
       .map((c): ColumnDef<EtpEntry> => ({
         id: `custom-${c.id}`,
-        header: c.name,
-        accessorFn: (e) => e.custom?.[c.id] ?? "",
+        header: `${c.name} (${customColumnUnit(c)})`,
+        // entryCustomTotal, not e.custom directly: values filed before custom columns became
+        // meters live only in the legacy scalar and must keep showing.
+        accessorFn: (e) => entryCustomTotal(e, c.id) ?? "",
         cell: ({ row }) => {
-          const v = row.original.custom?.[c.id];
-          return v == null ? <span className="text-sm text-muted-foreground">—</span> : <Num v={Number(v)} />;
+          const v = entryCustomTotal(row.original, c.id);
+          return v == null ? <span className="text-sm text-muted-foreground">—</span> : <Num v={v} unit={customColumnUnit(c)} />;
         },
       })),
     { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
@@ -173,7 +175,12 @@ export function EtpOverview() {
       Status: e.status,
       "Submitted At": e.submittedAt,
       // Operator-defined columns, appended last so the fixed headers keep their order.
-      ...Object.fromEntries((industry.customColumns ?? []).slice().sort((a, b) => a.order - b.order).map((c) => [c.name, e.custom?.[c.id] ?? ""])),
+      ...Object.fromEntries(
+        (industry.customColumns ?? [])
+          .slice()
+          .sort((a, b) => a.order - b.order)
+          .map((c) => [`${c.name} (${customColumnUnit(c)})`, entryCustomTotal(e, c.id) ?? ""]),
+      ),
     }));
     download(stampedName(`jalrakshak-etp-${industry.id}`), toCSV(rows));
     toast.success("ETP report exported", { description: `${rows.length} reading(s) · ${industry.name}` });

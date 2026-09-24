@@ -11,6 +11,8 @@ import { useAuthStore } from "@/lib/store/auth";
 import { useDataStore } from "@/lib/store/data";
 import { getServerTime } from "@/lib/data/server-time";
 import {
+  carriedCustomFinal,
+  customColumnUnit,
   meterRowStatus,
   groupGrandTotals,
   closingBalance,
@@ -23,7 +25,7 @@ import {
   previousCalendarDay,
   round1,
 } from "@/lib/data/etp-calc";
-import type { EtpEntry, EntryStatus } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT } from "@/lib/constants";
 import { formatNumber, formatDate } from "@/lib/utils";
 
@@ -74,9 +76,10 @@ export default function EtpEntryPage() {
   // Operator-defined extra columns. Definitions live on this unit's Industry record, so they
   // are tenant-scoped: a column added here can never surface on another unit's sheet.
   const customColumns = useMemo(() => [...(industry?.customColumns ?? [])].sort((a, b) => a.order - b.order), [industry?.customColumns]);
-  const [custom, setCustom] = useState<Record<string, string>>({});
+  const [customEdits, setCustomEdits] = useState<Record<string, MeterState>>({});
   const [showAddColumn, setShowAddColumn] = useState(false);
   const [newColumnName, setNewColumnName] = useState("");
+  const [newColumnUnit, setNewColumnUnit] = useState(DEFAULT_CUSTOM_COLUMN_UNIT);
   const [sludge, setSludge] = useState<LedgerState>(emptyLedger);
   const [salt, setSalt] = useState<LedgerState>(emptyLedger);
   const [override, setOverride] = useState(false);
@@ -182,16 +185,57 @@ export default function EtpEntryPage() {
   const todaySubmitted = todayEntry?.entryStatus === "SUBMITTED";
 
   /**
-   * Displayed value for a custom column: the operator's in-progress edit if there is one,
-   * otherwise today's saved value. A column with nothing stored stays BLANK - never 0 - so
-   * entries recorded before the column existed remain valid and are never back-filled.
+   * Custom columns are meters now, so they get the same Initial/Final/Total treatment as water
+   * and energy. Per COLUMN rather than per table: each is added separately, so a column created
+   * today has no previous Final and its Initial is a baseline the operator must type.
    */
-  const customValue = (id: string) => {
-    const edited = custom[id];
-    if (edited !== undefined) return edited;
-    const saved = todayEntry?.custom?.[id];
-    return saved == null ? "" : String(saved);
-  };
+  const customCarried = useMemo(() => {
+    if (!industryId || !today) return {} as Record<string, number | null>;
+    return Object.fromEntries(customColumns.map((c) => [c.id, carriedCustomFinal(etpEntries, industryId, today, c.id)]));
+  }, [customColumns, etpEntries, industryId, today]);
+
+  const lockCustomInitial = (id: string) => customCarried[id] != null;
+
+  /**
+   * The full field set, derived rather than held in an effect. Built from `customColumns` every
+   * render, so a column created mid-session always has a state entry - the alternative (seeding
+   * state in an effect) leaves a window where the table renders a column that has none.
+   *
+   * Precedence: a carried Final always wins for Initial (it is derived, and the field is locked),
+   * then the operator's in-progress edit, then whatever is already filed for today so a saved
+   * draft reloads instead of coming back blank. Carried and saved values pass through numFilter
+   * so an oversized legacy reading can never seed an out-of-range value.
+   */
+  const customState: Record<string, MeterState> = useMemo(() => {
+    const saved = todayEntry?.customMeters;
+    return Object.fromEntries(
+      customColumns.map((c) => {
+        const carried = customCarried[c.id];
+        const edit = customEdits[c.id];
+        const filed = saved?.[c.id];
+        const initial =
+          carried != null
+            ? numFilter(String(carried))
+            : (edit?.initial ?? (filed?.initial == null ? "" : numFilter(String(filed.initial))));
+        const final = edit?.final ?? (filed?.final == null ? "" : numFilter(String(filed.final)));
+        return [c.id, { initial, final }];
+      }),
+    );
+  }, [customColumns, customCarried, customEdits, todayEntry?.customMeters]);
+
+  const customRows = customColumns.map((c) => ({ code: c.id, label: c.name, ...meterRowStatus(customState[c.id].initial, customState[c.id].final) }));
+
+  /**
+   * Custom columns join only the gates that catch a genuine error. They are deliberately absent
+   * from `anyIncomplete`/`finalsMissing`: the Initial is auto-carried, so "has an Initial but no
+   * Final" is true of every untouched column from its second day onward, and a user-defined
+   * column must never hold up a statutory return just by being blank.
+   */
+  const customBelowInitial = customRows.some((r) => r.belowInitial);
+  const customOutOfRange = customRows.some((r) => rangeError(customState[r.code].initial) || rangeError(customState[r.code].final));
+
+  const setCustomMeter = (code: string, field: "initial" | "final", value: string) =>
+    setCustomEdits((prev) => ({ ...prev, [code]: { ...(prev[code] ?? customState[code] ?? { initial: "", final: "" }), [field]: numFilter(value) } }));
 
   /**
    * Drops the column definition only. Values already filed on historical entries are left
@@ -202,7 +246,7 @@ export default function EtpEntryPage() {
     if (!industryId) return;
     if (!window.confirm(`Remove the column "${name}"? Values already saved on past entries are kept but no longer shown.`)) return;
     removeCustomColumn(industryId, id);
-    setCustom((prev) => {
+    setCustomEdits((prev) => {
       const next = { ...prev };
       delete next[id];
       return next;
@@ -212,20 +256,29 @@ export default function EtpEntryPage() {
 
   const onAddColumn = () => {
     if (!industryId) return;
-    const res = addCustomColumn(industryId, newColumnName);
+    const res = addCustomColumn(industryId, newColumnName, newColumnUnit);
     if (!res.ok) {
       toast.error(res.error);
       return;
     }
     setNewColumnName("");
+    setNewColumnUnit(DEFAULT_CUSTOM_COLUMN_UNIT);
     setShowAddColumn(false);
-    toast.success("Column added", { description: res.column.name });
+    toast.success("Column added", { description: `${res.column.name} (${customColumnUnit(res.column)})` });
   };
 
   // Structural problems block BOTH draft-save and submit; `anyIncomplete`/`finalsMissing`/
   // continuity are submit-only (a draft may be partial).
   const structuralBlocked =
-    anyBelowInitial || anyOutOfRange || sludgeNeedsManifest || saltNeedsManifest || sludgeOverStock || saltOverStock || closingNegative;
+    anyBelowInitial ||
+    anyOutOfRange ||
+    customBelowInitial ||
+    customOutOfRange ||
+    sludgeNeedsManifest ||
+    saltNeedsManifest ||
+    sludgeOverStock ||
+    saltOverStock ||
+    closingNegative;
   const blocked = structuralBlocked || anyIncomplete;
   const submitBlocked = blocked || finalsMissing || continuityBlocked;
 
@@ -260,8 +313,15 @@ export default function EtpEntryPage() {
     energyRemark,
     sludge: { opening: sludge.opening, generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
     salt: { opening: salt.opening, generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
-    custom: customColumns.length
-      ? Object.fromEntries(customColumns.map((c) => [c.id, customValue(c.id).trim() ? num(customValue(c.id)) : null]))
+    // A column with no Final files a blank (null) and NO meter reading: storing the carried
+    // Initial against an empty Final would report a fabricated - usually negative - total.
+    customMeters: customColumns.length
+      ? Object.fromEntries(
+          customColumns.map((c) => {
+            const st = customState[c.id];
+            return [c.id, st.final.trim() === "" ? null : { initial: num(st.initial), final: num(st.final) }];
+          }),
+        )
       : undefined,
     overrideReason: missingPriorDay && override ? overrideReason.trim() : undefined,
   });
@@ -447,6 +507,24 @@ export default function EtpEntryPage() {
                 className={inputCls}
               />
             </div>
+            <div className="sm:w-28">
+              <label htmlFor="new-column-unit" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                Unit
+              </label>
+              <input
+                id="new-column-unit"
+                value={newColumnUnit}
+                onChange={(e) => setNewColumnUnit(e.target.value.slice(0, 12))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    onAddColumn();
+                  }
+                }}
+                placeholder={DEFAULT_CUSTOM_COLUMN_UNIT}
+                className={inputCls}
+              />
+            </div>
             <Button onClick={onAddColumn} className="h-10 gap-1.5 rounded-xl">
               <Save className="h-4 w-4" /> Save
             </Button>
@@ -458,48 +536,25 @@ export default function EtpEntryPage() {
             No custom columns yet. Use <span className="font-medium text-foreground">Add Column</span> to create one for this unit.
           </p>
         ) : (
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
-                  <th className="border-b border-border pb-2 pr-3 font-medium">#</th>
-                  <th className="border-b border-border pb-2 pr-3 font-medium">Column</th>
-                  <th className="border-b border-border pb-2 font-medium">Value</th>
-                  <th className="border-b border-border pb-2 font-medium"><span className="sr-only">Actions</span></th>
-                </tr>
-              </thead>
-              <tbody>
-                {customColumns.map((c, i) => (
-                  <tr key={c.id} className="border-b border-border/60 last:border-0">
-                    <td className="py-2 pr-3 text-muted-foreground">{i + 1}</td>
-                    {/* Rendered as text by React — a column name is never treated as HTML. */}
-                    <td className="py-2 pr-3 font-medium text-foreground">{c.name}</td>
-                    <td className="py-2">
-                      <input
-                        inputMode="decimal"
-                        aria-label={c.name}
-                        value={customValue(c.id)}
-                        onChange={(e) => setCustom((prev) => ({ ...prev, [c.id]: numFilter(e.target.value) }))}
-                        className={inputCls + " max-w-40"}
-                        placeholder="—"
-                      />
-                    </td>
-                    <td className="py-2 text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Remove ${c.name}`}
-                        title={`Remove ${c.name}`}
-                        onClick={() => onRemoveColumn(c.id, c.name)}
-                        className="text-muted-foreground hover:text-red-600"
-                      >
-                        <TrashIcon className="h-4 w-4" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="mt-4">
+            {/* The same table the water and energy sections use, so a custom parameter behaves
+                exactly like a meter: derived Total, carried-forward Initial, identical validation. */}
+            <MeterTable
+              caption="Operator-defined parameters"
+              unit=""
+              labelHeader="Column"
+              meters={customColumns.map((c) => ({ code: c.id, label: c.name }))}
+              state={customState}
+              rows={customRows}
+              onChange={setCustomMeter}
+              readonlyInitial={lockCustomInitial}
+              unitOf={(code) => customColumnUnit(customColumns.find((c) => c.id === code) ?? {})}
+              onRemove={onRemoveColumn}
+            />
+            <p className="mt-2 text-xs text-muted-foreground">
+              Total is calculated as Final − Initial. A column&apos;s Initial Reading stays editable until there is a previous day&apos;s
+              Final to carry from, and leaving a column blank never blocks submission.
+            </p>
           </div>
         )}
       </div>
@@ -526,6 +581,8 @@ export default function EtpEntryPage() {
               <span className="font-semibold">Submission blocked.</span>{" "}
               {anyBelowInitial && "A Final reading is less than its Initial reading. "}
               {anyIncomplete && "Every meter with an Initial needs a Final. "}
+              {customBelowInitial && "A custom column's Final reading is less than its Initial reading. "}
+              {customOutOfRange && "A custom column has an invalid number. "}
               {finalsMissing && "Enter a Final reading for every meter. "}
               {(sludgeNeedsManifest || saltNeedsManifest) && "A dispatch needs a Manifest No. and a Date of disposal. "}
               {(sludgeOverStock || saltOverStock) && "A dispatch exceeds available stock. "}
@@ -579,6 +636,9 @@ function MeterTable({
   onChange,
   readonlyInitial,
   grandTotal,
+  labelHeader = "Meter",
+  unitOf,
+  onRemove,
 }: {
   caption: string;
   unit: string;
@@ -586,14 +646,26 @@ function MeterTable({
   state: Record<string, MeterState>;
   rows: { code: string; total: number; incomplete: boolean; belowInitial: boolean }[];
   onChange: (code: string, field: "initial" | "final", value: string) => void;
-  readonlyInitial: boolean;
+  /** A boolean locks the whole table; a predicate locks per row (custom columns are added one
+   *  at a time, so a brand-new column has no prior Final to carry and must stay editable). */
+  readonlyInitial: boolean | ((code: string) => boolean);
   grandTotal?: number;
+  labelHeader?: string;
+  /** Per-row unit override; without it every row uses `unit`. */
+  unitOf?: (code: string) => string;
+  /** When given, each row gets a Remove control. */
+  onRemove?: (code: string, label: string) => void;
 }) {
   const rowByCode = Object.fromEntries(rows.map((r) => [r.code, r]));
+  const lockOf = (code: string) => (typeof readonlyInitial === "function" ? readonlyInitial(code) : readonlyInitial);
+  const anyLocked = meters.some((m) => lockOf(m.code));
+  // Never dereference state[code] directly: a column can appear in `meters` on the same render
+  // it is created, before any state map holds its key, which would crash the whole page.
+  const cellOf = (code: string): MeterState => state[code] ?? { initial: "", final: "" };
   return (
     <div>
       <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{caption}</p>
-      {readonlyInitial ? (
+      {anyLocked ? (
         <p className="mb-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <LockIcon className="h-3 w-3" aria-hidden /> {LOCKED_INITIAL_HINT}
         </p>
@@ -603,21 +675,31 @@ function MeterTable({
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               <th className="pb-2 pr-3 font-medium">#</th>
-              <th className="pb-2 pr-3 font-medium">Meter</th>
+              <th className="pb-2 pr-3 font-medium">{labelHeader}</th>
               <th className="w-36 pb-2 pr-3 font-medium">
                 <span className="inline-flex items-center gap-1">
                   Initial Reading
-                  {readonlyInitial ? <LockIcon className="h-3 w-3 text-muted-foreground" aria-hidden /> : null}
+                  {anyLocked ? <LockIcon className="h-3 w-3 text-muted-foreground" aria-hidden /> : null}
                 </span>
               </th>
               <th className="w-32 pb-2 pr-3 font-medium">Final Reading</th>
-              <th className="w-24 pb-2 font-medium">Total ({unit})</th>
+              <th className="w-24 pb-2 font-medium">{unitOf ? "Total" : `Total (${unit})`}</th>
+              {onRemove ? (
+                // `relative` is load-bearing: the sr-only span is absolutely positioned, and
+                // without a positioned ancestor its containing block is the document, so it
+                // escapes this table's horizontal scroll clip and widens the whole page.
+                <th className="relative w-10 pb-2 font-medium">
+                  <span className="sr-only">Actions</span>
+                </th>
+              ) : null}
             </tr>
           </thead>
           <tbody>
             {meters.map((m, i) => {
               const r = rowByCode[m.code];
               const invalid = r?.incomplete || r?.belowInitial;
+              const locked = lockOf(m.code);
+              const cell = cellOf(m.code);
               return (
                 <tr key={m.code} className="border-t border-border/60 align-middle">
                   <td className="py-2 pr-3 text-muted-foreground">{i + 1}</td>
@@ -626,16 +708,17 @@ function MeterTable({
                     <div className="relative">
                       <input
                         inputMode="decimal"
-                        value={state[m.code].initial}
+                        aria-label={`${m.label} initial reading`}
+                        value={cell.initial}
                         onChange={(e) => onChange(m.code, "initial", e.target.value)}
-                        readOnly={readonlyInitial}
-                        aria-readonly={readonlyInitial}
-                        tabIndex={readonlyInitial ? -1 : undefined}
-                        title={readonlyInitial ? LOCKED_INITIAL_HINT : undefined}
-                        className={`${cellCls}${readonlyInitial ? " cursor-not-allowed bg-muted/50 pr-7 text-muted-foreground" : ""}`}
+                        readOnly={locked}
+                        aria-readonly={locked}
+                        tabIndex={locked ? -1 : undefined}
+                        title={locked ? LOCKED_INITIAL_HINT : undefined}
+                        className={`${cellCls}${locked ? " cursor-not-allowed bg-muted/50 pr-7 text-muted-foreground" : ""}`}
                         placeholder="0"
                       />
-                      {readonlyInitial ? (
+                      {locked ? (
                         <LockIcon className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
                       ) : null}
                     </div>
@@ -643,13 +726,31 @@ function MeterTable({
                   <td className="py-2 pr-3">
                     <input
                       inputMode="decimal"
-                      value={state[m.code].final}
+                      aria-label={`${m.label} final reading`}
+                      value={cell.final}
                       onChange={(e) => onChange(m.code, "final", e.target.value)}
                       className={`${cellCls}${invalid ? " border-red-500/70 bg-red-500/5" : ""}`}
                       placeholder="0"
                     />
                   </td>
-                  <td className="py-2 font-mono font-semibold text-foreground">{formatNumber(r?.total ?? 0)}</td>
+                  <td className="py-2 font-mono font-semibold text-foreground">
+                    {formatNumber(r?.total ?? 0)}
+                    {unitOf ? <span className="ml-1 text-xs font-normal text-muted-foreground">{unitOf(m.code)}</span> : null}
+                  </td>
+                  {onRemove ? (
+                    <td className="py-2 text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove ${m.label}`}
+                        title={`Remove ${m.label}`}
+                        onClick={() => onRemove(m.code, m.label)}
+                        className="text-muted-foreground hover:text-red-600"
+                      >
+                        <TrashIcon className="h-4 w-4" />
+                      </Button>
+                    </td>
+                  ) : null}
                 </tr>
               );
             })}
@@ -657,7 +758,7 @@ function MeterTable({
           {grandTotal != null && (
             <tfoot>
               <tr className="border-t border-border">
-                <td colSpan={4} className="py-2 pr-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                <td colSpan={4 + (onRemove ? 1 : 0)} className="py-2 pr-3 text-right text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Grand Total
                 </td>
                 <td className="py-2 font-mono font-bold text-primary">

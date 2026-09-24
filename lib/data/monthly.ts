@@ -5,7 +5,7 @@
    ============================================================ */
 
 import type { EtpEntry } from "@/lib/types";
-import { round1 } from "@/lib/data/etp-calc";
+import { entryCustomTotal, round1 } from "@/lib/data/etp-calc";
 
 /** "YYYY-MM" key for a date-only string. */
 export function monthKey(date: string): string {
@@ -46,6 +46,23 @@ export const TRADE_EFFLUENT_RECYCLED_CODES = ["ETP_DIRECT_REUSE", "RO_PERMEATE_C
 /** Sigma of daily Totals across several water meters. Rounded once at the end - components are never pre-rounded. */
 export function monthlyWaterTotalOf(monthly: EtpEntry[], codes: readonly string[]): number {
   return round1(monthly.reduce((s, e) => s + codes.reduce((t, c) => t + Number(e.water?.[c]?.total ?? 0), 0), 0));
+}
+
+/**
+ * Sigma of a custom column's daily totals for the month, counting both meter-era readings and
+ * values filed before custom columns became meters. Null - NOT 0 - when no day in the month
+ * recorded the column, so an unused column reports blank instead of a measured zero.
+ */
+export function monthlyCustomTotal(monthly: EtpEntry[], columnId: string): number | null {
+  let sum = 0;
+  let seen = false;
+  for (const e of monthly) {
+    const v = entryCustomTotal(e, columnId);
+    if (v == null) continue;
+    seen = true;
+    sum += v;
+  }
+  return seen ? round1(sum) : null;
 }
 
 export interface LedgerRollup {
