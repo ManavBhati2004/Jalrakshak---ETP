@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, Check, Send, Droplets, Zap, Trash2, Lock, TriangleAlert, Ban, Save, FileWarning, Plus, Trash2 as TrashIcon, Lock as LockIcon } from "lucide-react";
+import { Calculator, Check, Send, Droplets, Zap, Trash2, CalendarDays, TriangleAlert, Ban, Save, FileWarning, Plus, Trash2 as TrashIcon, Lock as LockIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Button } from "@/components/ui/button";
@@ -25,7 +25,7 @@ import {
   previousCalendarDay,
   round1,
 } from "@/lib/data/etp-calc";
-import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus, type HwLedger, type MeterReading } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT } from "@/lib/constants";
 import { formatNumber, formatDate } from "@/lib/utils";
 
@@ -68,7 +68,10 @@ export default function EtpEntryPage() {
   const raiseTamperAlert = useDataStore((s) => s.raiseTamperAlert);
   const industry = industries.find((i) => i.id === industryId);
 
-  const [today, setToday] = useState("");
+  // `todayStr` is the real current day and only bounds the picker; `entryDate` is the day being
+  // filled or corrected. They start equal, so opening the page still lands on today.
+  const [todayStr, setTodayStr] = useState("");
+  const [entryDate, setEntryDate] = useState("");
   const [water, setWater] = useState<Record<string, MeterState>>(() => emptyMeters(WATER_METERS));
   const [waterRemark, setWaterRemark] = useState("");
   const [energy, setEnergy] = useState<Record<string, MeterState>>(() => emptyMeters(ENERGY_METERS));
@@ -86,23 +89,32 @@ export default function EtpEntryPage() {
   const [overrideReason, setOverrideReason] = useState("");
   const [success, setSuccess] = useState<null | { entry: EtpEntry; status: EntryStatus }>(null);
 
-  // Lock the date to the real current day (post-mount → hydration-safe).
+  // Resolve the current day post-mount (hydration-safe) and open on it.
   useEffect(() => {
     const n = new Date();
-    setToday(`${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`);
+    const d = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+    setTodayStr(d);
+    setEntryDate(d);
   }, []);
 
+  /**
+   * The month being reported. Any day from the 1st up to today may be filled or corrected, which
+   * is what lets a missed day be backfilled. Future days are not selectable: a meter reading for
+   * a day that has not happened yet is not a reading.
+   */
+  const monthStart = todayStr ? `${todayStr.slice(0, 7)}-01` : "";
+
   const carry = useMemo(
-    () => (industryId && today ? resolveCarryForward(etpEntries, industryId, today) : undefined),
-    [etpEntries, industryId, today],
+    () => (industryId && entryDate ? resolveCarryForward(etpEntries, industryId, entryDate) : undefined),
+    [etpEntries, industryId, entryDate],
   );
   // Most-recent prior entry (used to seed initials when the immediately-previous day is missing).
   const mostRecentPrior = useMemo(() => {
-    if (!industryId || !today) return undefined;
+    if (!industryId || !entryDate) return undefined;
     return etpEntries
-      .filter((e) => e.industryId === industryId && e.date < today)
+      .filter((e) => e.industryId === industryId && e.date < entryDate)
       .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
-  }, [etpEntries, industryId, today]);
+  }, [etpEntries, industryId, entryDate]);
 
   const priorDay = carry?.priorDay;
   const carrySource = priorDay ?? mostRecentPrior;
@@ -120,26 +132,72 @@ export default function EtpEntryPage() {
   const lockWaterInitials = !!carrySource?.water;
   const lockEnergyInitials = !!carrySource?.energy;
 
-  // Prefill Initial readings / opening balances from the carry source. Prefilled initials go
-  // through numFilter so an oversized legacy reading can't seed an out-of-range value. Keyed on
-  // the stable carrySource reference (NOT the freshly-rebuilt `carry` object) so a same-day
-  // submit does not re-run this and wipe the operator's just-entered finals.
+  /** Whatever is already filed for the selected day, if anything. */
+  const existingEntry = useMemo(
+    () => (industryId && entryDate ? etpEntries.find((e) => e.industryId === industryId && e.date === entryDate) : undefined),
+    [etpEntries, industryId, entryDate],
+  );
+  const entrySubmitted = existingEntry?.entryStatus === "SUBMITTED";
+
+  /**
+   * Load the selected day into the form.
+   *
+   * A day that already has an entry is loaded from that entry - this is what makes a day
+   * re-openable: without it, switching to a filed day would show blanks and re-saving would
+   * overwrite real readings with zeroes. Otherwise the Initial readings and opening balances come
+   * from the carry source, and Finals start empty.
+   *
+   * Prefilled values pass through numFilter so an oversized legacy reading can't seed an
+   * out-of-range value. Keyed on the stable `existingEntry` / `carrySource` references (NOT the
+   * freshly-rebuilt `carry` object) so unrelated store writes don't wipe in-progress typing.
+   */
   useEffect(() => {
-    if (!industryId || !today) return;
-    if (carrySource?.water) {
-      setWater(Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: numFilter(String(carrySource.water?.[m.code]?.final ?? 0)), final: "" }])));
-    } else {
-      setWater(emptyMeters(WATER_METERS));
-    }
-    if (carrySource?.energy) {
-      setEnergy(Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: numFilter(String(carrySource.energy?.[m.code]?.final ?? 0)), final: "" }])));
-    } else {
-      setEnergy(emptyMeters(ENERGY_METERS));
-    }
-    setSludge((s) => ({ ...s, opening: carrySource?.sludge?.closing ?? 0 }));
-    setSalt((s) => ({ ...s, opening: carrySource?.salt?.closing ?? 0 }));
+    if (!industryId || !entryDate) return;
+    const str = (v: number | undefined | null) => (v == null ? "" : numFilter(String(v)));
+    const seed = (defs: readonly { code: string }[], saved?: Record<string, MeterReading>, carried?: Record<string, MeterReading>) =>
+      Object.fromEntries(
+        defs.map((m) => {
+          const s = saved?.[m.code];
+          // A filed Initial wins: it is what was actually recorded that day.
+          const initial = s?.initial != null ? s.initial : carried ? (carried[m.code]?.final ?? 0) : null;
+          return [m.code, { initial: str(initial), final: str(s?.final) }];
+        }),
+      );
+    setWater(seed(WATER_METERS, existingEntry?.water, carrySource?.water));
+    setEnergy(seed(ENERGY_METERS, existingEntry?.energy, carrySource?.energy));
+    setWaterRemark(existingEntry?.waterRemark ?? "");
+    setEnergyRemark(existingEntry?.energyRemark ?? "");
+    const ledger = (saved: HwLedger | undefined, openingFallback: number): LedgerState =>
+      saved
+        ? {
+            opening: saved.opening ?? openingFallback,
+            generation: str(saved.generation),
+            dateOfDisposal: saved.dateOfDisposal ?? "",
+            dispatch: str(saved.dispatch),
+            manifestNo: saved.manifestNo ?? "",
+            remark: saved.remark ?? "",
+          }
+        : { ...emptyLedger(), opening: openingFallback };
+    setSludge(ledger(existingEntry?.sludge, carrySource?.sludge?.closing ?? 0));
+    setSalt(ledger(existingEntry?.salt, carrySource?.salt?.closing ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [carrySource, industryId, today]);
+  }, [existingEntry, carrySource, industryId, entryDate]);
+
+  /**
+   * Switch the sheet to another day. The per-day UI state is reset here rather than in an effect
+   * on `entryDate`: the loader above already re-runs whenever the filed entry changes, which
+   * includes the moment of a save, so resetting there would clear the confirmation panel the
+   * instant the operator submitted.
+   */
+  const selectDate = (v: string) => {
+    // The picker is bounded, but a typed-in date bypasses that in some browsers.
+    if (!v || (monthStart && v < monthStart) || (todayStr && v > todayStr)) return;
+    setEntryDate(v);
+    setCustomEdits({});
+    setOverride(false);
+    setOverrideReason("");
+    setSuccess(null);
+  };
 
   const setMeter = (which: "water" | "energy") => (code: string, field: "initial" | "final", value: string) => {
     const upd = (prev: Record<string, MeterState>) => ({ ...prev, [code]: { ...prev[code], [field]: numFilter(value) } });
@@ -180,19 +238,15 @@ export default function EtpEntryPage() {
     energyRows.some((r) => rangeError(energy[r.code].initial) || rangeError(energy[r.code].final)) ||
     rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
 
-  // Today's entry is already submitted → Save Draft would downgrade it; only allow a re-submit.
-  const todayEntry = industryId ? etpEntries.find((e) => e.industryId === industryId && e.date === today) : undefined;
-  const todaySubmitted = todayEntry?.entryStatus === "SUBMITTED";
-
   /**
    * Custom columns are meters now, so they get the same Initial/Final/Total treatment as water
    * and energy. Per COLUMN rather than per table: each is added separately, so a column created
    * today has no previous Final and its Initial is a baseline the operator must type.
    */
   const customCarried = useMemo(() => {
-    if (!industryId || !today) return {} as Record<string, number | null>;
-    return Object.fromEntries(customColumns.map((c) => [c.id, carriedCustomFinal(etpEntries, industryId, today, c.id)]));
-  }, [customColumns, etpEntries, industryId, today]);
+    if (!industryId || !entryDate) return {} as Record<string, number | null>;
+    return Object.fromEntries(customColumns.map((c) => [c.id, carriedCustomFinal(etpEntries, industryId, entryDate, c.id)]));
+  }, [customColumns, etpEntries, industryId, entryDate]);
 
   const lockCustomInitial = (id: string) => customCarried[id] != null;
 
@@ -207,7 +261,7 @@ export default function EtpEntryPage() {
    * so an oversized legacy reading can never seed an out-of-range value.
    */
   const customState: Record<string, MeterState> = useMemo(() => {
-    const saved = todayEntry?.customMeters;
+    const saved = existingEntry?.customMeters;
     return Object.fromEntries(
       customColumns.map((c) => {
         const carried = customCarried[c.id];
@@ -221,7 +275,7 @@ export default function EtpEntryPage() {
         return [c.id, { initial, final }];
       }),
     );
-  }, [customColumns, customCarried, customEdits, todayEntry?.customMeters]);
+  }, [customColumns, customCarried, customEdits, existingEntry?.customMeters]);
 
   const customRows = customColumns.map((c) => ({ code: c.id, label: c.name, ...meterRowStatus(customState[c.id].initial, customState[c.id].final) }));
 
@@ -290,7 +344,7 @@ export default function EtpEntryPage() {
         .filter(
           (e) =>
             e.industryId === industryId &&
-            e.date !== today &&
+            e.date !== entryDate &&
             e.entryStatus !== "DRAFT" &&
             e.status !== "rejected" &&
             (!industry?.hwmValidFrom || e.date >= industry.hwmValidFrom) &&
@@ -298,14 +352,14 @@ export default function EtpEntryPage() {
         )
         .reduce((s, e) => s + (e.sludge?.dispatch ?? 0), 0),
     );
-  }, [etpEntries, industryId, today, industry?.hwmValidFrom, industry?.hwmValidTo]);
+  }, [etpEntries, industryId, entryDate, industry?.hwmValidFrom, industry?.hwmValidTo]);
   const projectedSludge = round1(priorSludgeDispatch + num(sludge.dispatch));
   const usage = authorisationUsage(projectedSludge, industry?.authorisedQuantityKg);
   const warnLevel = authorisedQuantityWarning(projectedSludge, industry?.authorisedQuantityKg);
 
   const buildInput = (status: EntryStatus) => ({
     industryId: industryId as string,
-    date: today,
+    date: entryDate,
     status,
     water: Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: num(water[m.code].initial), final: num(water[m.code].final) }])),
     waterRemark,
@@ -328,8 +382,8 @@ export default function EtpEntryPage() {
 
   const onSaveDraft = () => {
     if (!industryId) return;
-    if (todaySubmitted) {
-      toast.error("Today's entry is already submitted", { description: "Use Submit to file a correction instead of saving a draft." });
+    if (entrySubmitted) {
+      toast.error("That day is already submitted", { description: "Use Submit to file a correction instead of saving a draft." });
       return;
     }
     if (structuralBlocked) {
@@ -380,19 +434,39 @@ export default function EtpEntryPage() {
         description="One daily sheet: water (12 meters), electricity (3 meters) and the ETP sludge / MEE-salt ledgers. Save a draft anytime; submit for Monitoring-Body verification."
       />
 
-      {/* date + carry-forward status */}
+      {/* date picker + carry-forward status */}
       <div className="flex flex-col gap-3 rounded-2xl border border-border bg-card p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-        <div className="flex items-center gap-2 text-sm">
-          <Lock className="h-4 w-4 text-muted-foreground" />
-          <span className="font-medium text-foreground">{today ? formatDate(today) : "…"}</span>
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">Today · locked</span>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <CalendarDays className="h-4 w-4 text-muted-foreground" aria-hidden />
+          <label htmlFor="entry-date" className="sr-only">
+            Entry date
+          </label>
+          <input
+            id="entry-date"
+            type="date"
+            value={entryDate}
+            min={monthStart}
+            max={todayStr}
+            onChange={(e) => selectDate(e.target.value)}
+            className="h-9 rounded-lg border border-border bg-background px-2 text-sm font-medium text-foreground outline-none transition-colors focus:border-primary/50"
+          />
+          {entryDate === todayStr ? (
+            <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">Today</span>
+          ) : null}
+          {entrySubmitted ? (
+            <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-600">Submitted · editing files a correction</span>
+          ) : existingEntry ? (
+            <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-600">Draft saved</span>
+          ) : (
+            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">No entry yet</span>
+          )}
         </div>
         <p className="text-xs text-muted-foreground">
           {lockWaterInitials || lockEnergyInitials
-            ? "Initial readings & opening balances are carried forward from your last entry and cannot be edited."
+            ? "Pick any day from the 1st up to today. Initial readings & opening balances are carried forward from the previous entry and cannot be edited."
             : carry?.isFirstEver
               ? "First entry — enter each meter's current reading as the Initial (baseline)."
-              : "Yesterday's entry is missing — Initials are prefilled from your last entry; submission needs a continuity override."}
+              : "The previous day's entry is missing — Initials are prefilled from the last entry; submission needs a continuity override."}
         </p>
       </div>
 
@@ -403,7 +477,7 @@ export default function EtpEntryPage() {
             <FileWarning className="h-4 w-4" /> Missing previous day
           </p>
           <p className="mt-1 text-amber-700">
-            There is no entry for {today ? formatDate(previousCalendarDay(today)) : "yesterday"}. Create a zero-consumption entry for missed days with a remark, or authorise an override to submit anyway.
+            There is no entry for {entryDate ? formatDate(previousCalendarDay(entryDate)) : "the previous day"}. Create a zero-consumption entry for missed days with a remark, or authorise an override to submit anyway.
           </p>
           <label className="mt-3 flex items-center gap-2 text-xs font-medium text-amber-800">
             <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} /> Authorise continuity override (records a reason)
@@ -594,10 +668,10 @@ export default function EtpEntryPage() {
         )}
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <Button variant="outline" onClick={onSaveDraft} disabled={!today || todaySubmitted || structuralBlocked} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
-            <Save className="h-4 w-4" /> {todaySubmitted ? "Already submitted" : "Save Draft"}
+          <Button variant="outline" onClick={onSaveDraft} disabled={!entryDate || entrySubmitted || structuralBlocked} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
+            <Save className="h-4 w-4" /> {entrySubmitted ? "Already submitted" : "Save Draft"}
           </Button>
-          <Button onClick={onSubmit} disabled={submitBlocked || !today} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
+          <Button onClick={onSubmit} disabled={submitBlocked || !entryDate} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
             <Send className="h-4 w-4" /> {submitBlocked ? "Fix the highlighted fields" : "Submit Daily Entry"}
           </Button>
         </div>
@@ -611,7 +685,7 @@ export default function EtpEntryPage() {
               </div>
               <p className="mt-1 text-sm text-muted-foreground">
                 {success.status === "DRAFT"
-                  ? "Your draft is saved for today — finish and submit to send it to the Monitoring Body. "
+                  ? "Your draft is saved — finish and submit to send it to the Monitoring Body. "
                   : "Recorded and sent for verification. "}
                 Track it in <Link href="/dashboard" className="font-semibold text-foreground hover:underline">your dashboard</Link>.
               </p>
