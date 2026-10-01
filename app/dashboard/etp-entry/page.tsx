@@ -11,6 +11,8 @@ import { useAuthStore } from "@/lib/store/auth";
 import { useDataStore } from "@/lib/store/data";
 import { getServerTime } from "@/lib/data/server-time";
 import {
+  MIN_ENTRY_DATE,
+  validateEntryDate,
   carriedCustomFinal,
   customColumnUnit,
   meterRowStatus,
@@ -98,11 +100,10 @@ export default function EtpEntryPage() {
   }, []);
 
   /**
-   * The month being reported. Any day from the 1st up to today may be filled or corrected, which
-   * is what lets a missed day be backfilled. Future days are not selectable: a meter reading for
-   * a day that has not happened yet is not a reading.
+   * Any PAST day may be filled or corrected - previous days, previous months, previous years - so a
+   * missed day can be backfilled at any time. Only the future is out of bounds: a meter reading for
+   * a day that has not happened yet is not a reading. `MIN_ENTRY_DATE` is purely a typo guard.
    */
-  const monthStart = todayStr ? `${todayStr.slice(0, 7)}-01` : "";
 
   const carry = useMemo(
     () => (industryId && entryDate ? resolveCarryForward(etpEntries, industryId, entryDate) : undefined),
@@ -190,8 +191,16 @@ export default function EtpEntryPage() {
    * instant the operator submitted.
    */
   const selectDate = (v: string) => {
-    // The picker is bounded, but a typed-in date bypasses that in some browsers.
-    if (!v || (monthStart && v < monthStart) || (todayStr && v > todayStr)) return;
+    // The picker is bounded, but a typed-in date bypasses that in some browsers - so re-check with
+    // the same validator the store uses, rather than trusting the input element.
+    if (!todayStr) return;
+    const check = validateEntryDate(v, todayStr);
+    if (!check.ok) {
+      // A half-typed date fails harmlessly while the user is still typing; only complain once the
+      // value is structurally a date but out of range.
+      if (check.error === "FUTURE" || check.error === "TOO_OLD" || check.error === "NOT_A_REAL_DATE") toast.error(check.message);
+      return;
+    }
     setEntryDate(v);
     setCustomEdits({});
     setOverride(false);
@@ -390,14 +399,22 @@ export default function EtpEntryPage() {
       toast.error("Fix the highlighted fields before saving a draft");
       return;
     }
-    const { entry } = submitEtpEntry(buildInput("DRAFT"));
+    const { entry, error } = submitEtpEntry(buildInput("DRAFT"));
+    if (error || !entry) {
+      toast.error(error ?? "Could not save the entry");
+      return;
+    }
     toast.success("Draft saved", { description: "Your partial entry is saved. It is not sent for verification or counted in reports." });
     setSuccess({ entry, status: "DRAFT" });
   };
 
   const onSubmit = () => {
     if (!industryId || submitBlocked) return;
-    const { entry, alerts } = submitEtpEntry(buildInput("SUBMITTED"));
+    const { entry, alerts, error } = submitEtpEntry(buildInput("SUBMITTED"));
+    if (error || !entry) {
+      toast.error(error ?? "Could not submit the entry");
+      return;
+    }
     const totalWater = round1((entry.waterTotals?.daily ?? 0) + (entry.waterTotals?.ro ?? 0) + (entry.waterTotals?.mee ?? 0));
     toast.success("Daily entry submitted", {
       description: `Water total ${formatNumber(totalWater)} m³ · sent for verification${alerts.length ? ` · ${alerts.length} alert(s)` : ""}.`,
@@ -445,7 +462,7 @@ export default function EtpEntryPage() {
             id="entry-date"
             type="date"
             value={entryDate}
-            min={monthStart}
+            min={MIN_ENTRY_DATE}
             max={todayStr}
             onChange={(e) => selectDate(e.target.value)}
             className="h-9 rounded-lg border border-border bg-background px-2 text-sm font-medium text-foreground outline-none transition-colors focus:border-primary/50"
@@ -463,7 +480,7 @@ export default function EtpEntryPage() {
         </div>
         <p className="text-xs text-muted-foreground">
           {lockWaterInitials || lockEnergyInitials
-            ? "Pick any day from the 1st up to today. Initial readings & opening balances are carried forward from the previous entry and cannot be edited."
+            ? "Pick any past date — including earlier months and years. Initial readings & opening balances are carried forward from the previous entry and cannot be edited."
             : carry?.isFirstEver
               ? "First entry — enter each meter's current reading as the Initial (baseline)."
               : "The previous day's entry is missing — Initials are prefilled from the last entry; submission needs a continuity override."}

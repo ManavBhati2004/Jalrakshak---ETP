@@ -122,6 +122,47 @@ export function withinRange(date: string, from?: string, to?: string): boolean {
   return true;
 }
 
+/* ---------------- Entry-date validation ---------------- */
+
+/**
+ * Floor for a reading date. Purely a typo guard: `0202-09-30` is a structurally valid date, and
+ * nothing else in the app would reject it. Any genuine historical record sits well after this.
+ */
+export const MIN_ENTRY_DATE = "2000-01-01";
+
+export type EntryDateError = "REQUIRED" | "MALFORMED" | "NOT_A_REAL_DATE" | "FUTURE" | "TOO_OLD";
+
+/**
+ * Validate the day a reading belongs to. Any past date is allowed - a missed day may be filled in
+ * and a filed day corrected - but a date in the future is not a reading yet.
+ *
+ * `today` is INJECTED rather than read from a clock, so this stays pure and testable. Comparisons
+ * are plain string comparisons, which are chronological for `YYYY-MM-DD` and therefore immune to
+ * the timezone shifts that Date parsing introduces.
+ */
+export function validateEntryDate(date: string, today: string): { ok: true } | { ok: false; error: EntryDateError; message: string } {
+  const s = (date ?? "").trim();
+  if (s === "") return { ok: false, error: "REQUIRED", message: "Choose the date this reading belongs to." };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return { ok: false, error: "MALFORMED", message: "Enter the date as YYYY-MM-DD." };
+
+  // Round-trip through UTC to reject a well-formed but non-existent day such as 2026-02-30.
+  const [y, m, d] = s.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+    return { ok: false, error: "NOT_A_REAL_DATE", message: `${s} is not a real calendar date.` };
+  }
+
+  if (today && s > today) return { ok: false, error: "FUTURE", message: "A reading cannot be dated in the future." };
+  if (s < MIN_ENTRY_DATE) return { ok: false, error: "TOO_OLD", message: `Dates before ${MIN_ENTRY_DATE} are not accepted.` };
+  return { ok: true };
+}
+
+/** Today's date as a local `YYYY-MM-DD`. Local getters only, so the calendar day never shifts. */
+export function localDateString(d: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 /**
  * One meter's stored daily total for an entry, or null when that meter was never recorded.
  * Null matters: entries filed before a meter existed must render blank, not a fabricated 0.

@@ -22,9 +22,24 @@ export function compactNumber(n: number) {
   return new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 }
 
+/**
+ * Parse a date string for display.
+ *
+ * A date-only `YYYY-MM-DD` is parsed as LOCAL midnight. `new Date("2026-09-30")` is parsed as UTC
+ * midnight per spec, which in any negative-offset timezone renders as the previous day — so a
+ * reading filed for 30 September would display as 29 September. Appending a time with no offset
+ * forces local parsing and pins the calendar day.
+ *
+ * Anything else (a full ISO timestamp, which carries `Z` or an offset) is left to the native
+ * parser, so instants keep rendering as the correct moment in the viewer's timezone.
+ */
+export function parseDisplayDate(iso: string): Date {
+  return new Date(/^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso}T00:00:00` : iso);
+}
+
 export function formatDate(iso: string | null, withTime = false) {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const d = parseDisplayDate(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString("en-IN", {
     day: "2-digit",

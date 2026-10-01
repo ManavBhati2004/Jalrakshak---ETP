@@ -18,6 +18,9 @@ import {
   dateRangeValid,
   entryMeterTotal,
   entryEnergyTotal,
+  validateEntryDate,
+  localDateString,
+  MIN_ENTRY_DATE,
   entryCustomTotal,
   entryCustomReading,
   carriedCustomFinal,
@@ -401,5 +404,94 @@ describe("custom columns share the meter row rules and unit defaulting", () => {
     expect(customColumnUnit({ unit: "" })).toBe("M3");
     expect(customColumnUnit({ unit: "  " })).toBe("M3");
     expect(customColumnUnit({ unit: "Kwh" })).toBe("Kwh");
+  });
+});
+
+/* ============================================================================
+   Entry-date validation. Any PAST date is a legitimate reading date - a missed
+   day may be backfilled and a filed day corrected - but the future is not a
+   reading yet. `today` is injected so these assertions never depend on a clock.
+   ========================================================================== */
+describe("validateEntryDate", () => {
+  const TODAY = "2026-10-01";
+  const ok = (d: string) => validateEntryDate(d, TODAY).ok;
+  const err = (d: string) => {
+    const r = validateEntryDate(d, TODAY);
+    return r.ok ? null : r.error;
+  };
+
+  it("accepts today", () => {
+    expect(ok(TODAY)).toBe(true);
+  });
+
+  it("accepts the previous day, previous month, previous year and older", () => {
+    expect(ok("2026-09-30")).toBe(true); // yesterday, across a month boundary
+    expect(ok("2026-09-15")).toBe(true); // previous month
+    expect(ok("2026-08-10")).toBe(true); // two months back
+    expect(ok("2025-12-31")).toBe(true); // previous year
+    expect(ok("2024-03-07")).toBe(true); // years back
+  });
+
+  it("rejects the future, including tomorrow", () => {
+    expect(err("2026-10-02")).toBe("FUTURE");
+    expect(err("2026-11-01")).toBe("FUTURE");
+    expect(err("2027-01-01")).toBe("FUTURE");
+  });
+
+  it("requires a date", () => {
+    expect(err("")).toBe("REQUIRED");
+    expect(err("   ")).toBe("REQUIRED");
+  });
+
+  it("rejects anything that is not YYYY-MM-DD", () => {
+    // Guards the store against a hand-crafted payload, since there is no server to re-check it.
+    expect(err("30-09-2026")).toBe("MALFORMED");
+    expect(err("2026-9-30")).toBe("MALFORMED");
+    expect(err("2026/09/30")).toBe("MALFORMED");
+    expect(err("not-a-date")).toBe("MALFORMED");
+    expect(err("2026-09-30T00:00:00Z")).toBe("MALFORMED");
+  });
+
+  it("rejects well-formed dates that do not exist", () => {
+    expect(err("2026-02-30")).toBe("NOT_A_REAL_DATE");
+    expect(err("2026-13-01")).toBe("NOT_A_REAL_DATE");
+    expect(err("2026-00-10")).toBe("NOT_A_REAL_DATE");
+    expect(err("2026-04-31")).toBe("NOT_A_REAL_DATE");
+  });
+
+  it("accepts a real leap day and rejects a fake one", () => {
+    expect(validateEntryDate("2028-02-29", "2028-03-01").ok).toBe(true);
+    expect(err("2026-02-29")).toBe("NOT_A_REAL_DATE");
+  });
+
+  it("floors absurdly old dates as typos", () => {
+    expect(err("1999-12-31")).toBe("TOO_OLD");
+    expect(err("0202-09-30")).toBe("TOO_OLD");
+    expect(ok(MIN_ENTRY_DATE)).toBe(true);
+  });
+
+  it("carries a message for every rejection", () => {
+    for (const bad of ["", "nope", "2026-02-30", "2026-12-31", "1999-01-01"]) {
+      const r = validateEntryDate(bad, TODAY);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.message.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("localDateString", () => {
+  it("formats a date as the LOCAL calendar day, never shifted by timezone", () => {
+    // Built from local parts, so whatever zone the suite runs in, the day is the local one.
+    const d = new Date(2026, 8, 30, 23, 30); // 30 Sep 2026, 23:30 local
+    expect(localDateString(d)).toBe("2026-09-30");
+  });
+
+  it("pads single-digit months and days", () => {
+    expect(localDateString(new Date(2026, 0, 5))).toBe("2026-01-05");
+  });
+
+  it("agrees with the local getters at the very start of a day", () => {
+    const d = new Date(2026, 9, 1, 0, 0, 0);
+    expect(localDateString(d)).toBe("2026-10-01");
   });
 });

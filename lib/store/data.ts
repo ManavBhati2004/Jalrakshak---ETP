@@ -28,7 +28,7 @@ import {
   buildEtpApprovals,
 } from "@/lib/data/seed";
 import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
-import { toMeterReading, groupGrandTotals, toLedger, round1 } from "@/lib/data/etp-calc";
+import { toMeterReading, groupGrandTotals, toLedger, round1, validateEntryDate, localDateString } from "@/lib/data/etp-calc";
 
 export interface ReadingInput {
   industryId: string;
@@ -127,7 +127,8 @@ interface DataState {
   alerts: Alert[];
   compliance: ComplianceRecord[];
   submitReading: (input: ReadingInput) => { reading: FlowMeterReading; alerts: AlertType[] };
-  submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry; alerts: AlertType[] };
+  /** On a bad entry date nothing is written: `error` is set and `entry` is null. */
+  submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry | null; alerts: AlertType[]; error?: string };
   raiseEtpInletAlert: (industryId: string, etpInlet: number) => void;
   raiseTamperAlert: (industryId: string, clientISO: string, serverISO: string, driftMinutes: number) => void;
   reportIssue: (industryId: string, category: string, message: string) => void;
@@ -266,6 +267,16 @@ export const useDataStore = create<DataState>()(
       },
 
       submitEtpEntry: (input) => {
+        /**
+         * The reading date is whatever the operator chose - never a clock - so this is the one
+         * place that can refuse a nonsensical one. There is no server in this app, so the store is
+         * the last line of defence behind the form: without this check a malformed or future date
+         * would be persisted verbatim. Any PAST date is valid; a missed day may be filled in and a
+         * filed day corrected.
+         */
+        const dateCheck = validateEntryDate(input.date, localDateString());
+        if (!dateCheck.ok) return { entry: null, alerts: [], error: dateCheck.message };
+
         const ind = get().industries.find((i) => i.id === input.industryId);
         const isSubmit = input.status === "SUBMITTED";
         const submittedAt = nowISO();
