@@ -85,6 +85,14 @@ export interface EtpDocumentMeta {
   uploadedByUid: string;
   /** Only a complete upload is assembled by readers — a torn upload is never served. */
   complete: boolean;
+  /**
+   * Operator's note on this document — status, validity, pending requirements, notice details.
+   * Independent of the file: a slot may carry a remark with no PDF yet (e.g. "CTO renewal
+   * pending"), which is why readers must not gate on `complete` alone.
+   */
+  remark?: string;
+  remarkAt?: string; // ISO
+  remarkByUid?: string;
 }
 
 export interface Industry {

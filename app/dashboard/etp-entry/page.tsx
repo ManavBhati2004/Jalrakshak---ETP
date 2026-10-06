@@ -25,7 +25,7 @@ import {
   authorisedQuantityWarning,
   parseDailyValue,
   previousCalendarDay,
-  round1,
+  round2,
 } from "@/lib/data/etp-calc";
 import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus, type HwLedger, type MeterReading } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT } from "@/lib/constants";
@@ -45,14 +45,14 @@ const num = (s: string) => {
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 };
-// Numeric standard: ≤7 integer digits + ≤1 decimal, nonnegative (master §4).
+// Numeric standard: ≤7 integer digits + ≤2 decimals, nonnegative.
 const numFilter = (s: string) => {
   let v = s.replace(/[^0-9.]/g, "");
   const dot = v.indexOf(".");
   if (dot !== -1) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, "");
   const [int = "", dec = ""] = v.split(".");
   const capInt = int.slice(0, 7);
-  return v.includes(".") ? `${capInt}.${dec.slice(0, 1)}` : capInt;
+  return v.includes(".") ? `${capInt}.${dec.slice(0, 2)}` : capInt;
 };
 
 const emptyMeters = (keys: readonly { code: string }[]): Record<string, MeterState> =>
@@ -88,6 +88,8 @@ export default function EtpEntryPage() {
   const [sludge, setSludge] = useState<LedgerState>(emptyLedger);
   const [salt, setSalt] = useState<LedgerState>(emptyLedger);
   const [override, setOverride] = useState(false);
+  // Final sign-off. Submit-only: a draft may be saved unconfirmed.
+  const [confirmed, setConfirmed] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [success, setSuccess] = useState<null | { entry: EtpEntry; status: EntryStatus }>(null);
 
@@ -204,6 +206,7 @@ export default function EtpEntryPage() {
     setEntryDate(v);
     setCustomEdits({});
     setOverride(false);
+    setConfirmed(false);
     setOverrideReason("");
     setSuccess(null);
   };
@@ -343,12 +346,12 @@ export default function EtpEntryPage() {
     saltOverStock ||
     closingNegative;
   const blocked = structuralBlocked || anyIncomplete;
-  const submitBlocked = blocked || finalsMissing || continuityBlocked;
+  const submitBlocked = blocked || finalsMissing || continuityBlocked || !confirmed;
 
   // Authorisation usage for ETP sludge (over the HWM validity window; drafts excluded).
   const priorSludgeDispatch = useMemo(() => {
     if (!industryId) return 0;
-    return round1(
+    return round2(
       etpEntries
         .filter(
           (e) =>
@@ -362,7 +365,7 @@ export default function EtpEntryPage() {
         .reduce((s, e) => s + (e.sludge?.dispatch ?? 0), 0),
     );
   }, [etpEntries, industryId, entryDate, industry?.hwmValidFrom, industry?.hwmValidTo]);
-  const projectedSludge = round1(priorSludgeDispatch + num(sludge.dispatch));
+  const projectedSludge = round2(priorSludgeDispatch + num(sludge.dispatch));
   const usage = authorisationUsage(projectedSludge, industry?.authorisedQuantityKg);
   const warnLevel = authorisedQuantityWarning(projectedSludge, industry?.authorisedQuantityKg);
 
@@ -415,11 +418,12 @@ export default function EtpEntryPage() {
       toast.error(error ?? "Could not submit the entry");
       return;
     }
-    const totalWater = round1((entry.waterTotals?.daily ?? 0) + (entry.waterTotals?.ro ?? 0) + (entry.waterTotals?.mee ?? 0));
+    const totalWater = round2((entry.waterTotals?.daily ?? 0) + (entry.waterTotals?.ro ?? 0) + (entry.waterTotals?.mee ?? 0));
     toast.success("Daily entry submitted", {
       description: `Water total ${formatNumber(totalWater)} m³ · sent for verification${alerts.length ? ` · ${alerts.length} alert(s)` : ""}.`,
     });
     setSuccess({ entry, status: "SUBMITTED" });
+    setConfirmed(false); // a correction to this day must be confirmed again
     if (uid) void verifyClock(uid, industryId);
   };
 
@@ -656,7 +660,7 @@ export default function EtpEntryPage() {
           {WATER_GROUPS.map((g) => (
             <div key={g.id} className="rounded-xl border border-dashed border-primary/40 bg-primary/5 p-4">
               <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                <Calculator className="h-3.5 w-3.5" /> {g.id.toUpperCase()} Grand Total
+                <Calculator className="h-3.5 w-3.5" /> {g.totalLabel}
               </p>
               <p className="mt-1 font-mono text-2xl font-bold text-primary">
                 {formatNumber(groupTotals[g.id])} <span className="text-sm font-medium text-muted-foreground">m³</span>
@@ -679,10 +683,17 @@ export default function EtpEntryPage() {
               {(sludgeOverStock || saltOverStock) && "A dispatch exceeds available stock. "}
               {closingNegative && "A closing balance is negative. "}
               {continuityBlocked && "Yesterday's entry is missing — authorise a continuity override with a reason. "}
+              {!confirmed && "Tick the confirmation box below before submitting. "}
               You can still Save Draft.
             </span>
           </div>
         )}
+
+        {/* Final sign-off. Gates Submit only - a draft can still be saved unconfirmed. */}
+        <label className="mt-4 flex items-start gap-2 rounded-xl border border-border bg-muted/30 p-3 text-xs font-medium text-foreground">
+          <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5" />
+          I HAVE CHECKED ALL THE ABOVE DETAILS AND CONFIRM THAT ALL REQUIRED DETAILS ARE FILLED.
+        </label>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <Button variant="outline" onClick={onSaveDraft} disabled={!entryDate || entrySubmitted || structuralBlocked} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">

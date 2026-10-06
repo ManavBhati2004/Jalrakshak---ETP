@@ -28,7 +28,7 @@ import {
   buildEtpApprovals,
 } from "@/lib/data/seed";
 import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
-import { toMeterReading, groupGrandTotals, toLedger, round1, validateEntryDate, localDateString } from "@/lib/data/etp-calc";
+import { toMeterReading, groupGrandTotals, toLedger, round2, validateEntryDate, localDateString } from "@/lib/data/etp-calc";
 
 export interface ReadingInput {
   industryId: string;
@@ -326,7 +326,7 @@ export const useDataStore = create<DataState>()(
         const roInlet = legacy("roInlet");
         const roReject = legacy("roReject");
         const roPermeate = legacy("roPermeate");
-        const totalWaterIntake = round1(freshWaterConsumption + etpReuse + roPermeate);
+        const totalWaterIntake = round2(freshWaterConsumption + etpReuse + roPermeate);
 
         // One parent record per unit/date: reuse the id of any existing entry (draft → submit).
         const prior = get().etpEntries.find((e) => e.industryId === input.industryId && e.date === input.date);
@@ -775,7 +775,7 @@ export function dailyIntake(entries: EtpEntry[], todayStr: string, yesterdayStr:
   const valid = entries.filter((e) => e.entryStatus !== "DRAFT" && e.status !== "rejected");
   const today = Number(valid.find((e) => e.date === todayStr)?.totalWaterIntake ?? 0);
   const yesterday = Number(valid.find((e) => e.date === yesterdayStr)?.totalWaterIntake ?? 0);
-  return { today, yesterday, difference: round1(today - yesterday) };
+  return { today, yesterday, difference: round2(today - yesterday) };
 }
 
 export function selectMetrics(s: DataState): DashboardMetrics {

@@ -15,7 +15,7 @@ import type {
   HwLedger,
 } from "@/lib/types";
 import { complianceStatus, ALERT_META, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
-import { groupGrandTotals, round1 } from "@/lib/data/etp-calc";
+import { groupGrandTotals, round2 } from "@/lib/data/etp-calc";
 
 export const DEMO_TODAY = "2026-08-14";
 
@@ -329,11 +329,11 @@ export function buildEtpEntries(): EtpEntry[] {
     // Cumulative meter bases (carry-forward: next-day Initial = prior-day Final), seeded from
     // the Excel opening readings with a small per-unit offset so units differ but stay realistic.
     const waterBase: Record<string, number> = {};
-    for (const m of WATER_METERS) waterBase[m.code] = round1(WATER_SEED[m.code].init * (0.96 + rnd() * 0.08));
+    for (const m of WATER_METERS) waterBase[m.code] = round2(WATER_SEED[m.code].init * (0.96 + rnd() * 0.08));
     const energyBase: Record<string, number> = {};
-    for (const e of ENERGY_METERS) energyBase[e.code] = round1(ENERGY_SEED[e.code].init * (0.96 + rnd() * 0.08));
-    let sludgeOpening = round1(12000 + rnd() * 800); // kg (~12.0–12.8 MT, like the Excel)
-    let saltOpening = round1(800 + rnd() * 80); // kg (~0.80–0.88 MT)
+    for (const e of ENERGY_METERS) energyBase[e.code] = round2(ENERGY_SEED[e.code].init * (0.96 + rnd() * 0.08));
+    let sludgeOpening = round2(12000 + rnd() * 800); // kg (~12.0–12.8 MT, like the Excel)
+    let saltOpening = round2(800 + rnd() * 80); // kg (~0.80–0.88 MT)
 
     // Two sludge dispatch days spread across the month (with manifest + disposal date).
     const dispatchDays = new Set([SEED_DAYS - 10, SEED_DAYS - 22]);
@@ -346,9 +346,9 @@ export function buildEtpEntries(): EtpEntry[] {
       for (const m of WATER_METERS) {
         const cfg = WATER_SEED[m.code];
         const initial = waterBase[m.code];
-        const flow = off ? 0 : round1(cfg.min + rnd() * (cfg.max - cfg.min));
-        const final = round1(initial + flow);
-        water[m.code] = { initial, final, total: round1(final - initial) };
+        const flow = off ? 0 : round2(cfg.min + rnd() * (cfg.max - cfg.min));
+        const final = round2(initial + flow);
+        water[m.code] = { initial, final, total: round2(final - initial) };
         waterBase[m.code] = final;
       }
       const waterTotals = groupGrandTotals(water);
@@ -357,34 +357,34 @@ export function buildEtpEntries(): EtpEntry[] {
       for (const e of ENERGY_METERS) {
         const cfg = ENERGY_SEED[e.code];
         const initial = energyBase[e.code];
-        const flow = off ? 0 : round1(cfg.min + rnd() * (cfg.max - cfg.min));
-        const final = round1(initial + flow);
-        energy[e.code] = { initial, final, total: round1(final - initial) };
+        const flow = off ? 0 : round2(cfg.min + rnd() * (cfg.max - cfg.min));
+        const final = round2(initial + flow);
+        energy[e.code] = { initial, final, total: round2(final - initial) };
         energyBase[e.code] = final;
       }
 
       // Sludge ledger (kg): daily generation, two dispatch days; salt accumulates (kg).
-      const sludgeGen = off ? 0 : round1(150 + rnd() * 160);
-      const sludgeDispatch = dispatchDays.has(d) ? round1(sludgeOpening * 0.45) : 0;
+      const sludgeGen = off ? 0 : round2(150 + rnd() * 160);
+      const sludgeDispatch = dispatchDays.has(d) ? round2(sludgeOpening * 0.45) : 0;
       const sludge: HwLedger = {
         opening: sludgeOpening,
         generation: sludgeGen,
         dateOfDisposal: sludgeDispatch > 0 ? date : "",
         dispatch: sludgeDispatch,
         manifestNo: sludgeDispatch > 0 ? `MF-${ind.misId ?? ind.id}-${SEED_DAYS - d}` : "",
-        closing: round1(sludgeOpening + sludgeGen - sludgeDispatch),
+        closing: round2(sludgeOpening + sludgeGen - sludgeDispatch),
         remark: "",
       };
       sludgeOpening = sludge.closing;
 
-      const saltGen = off ? 0 : round1(5 + rnd() * 8);
+      const saltGen = off ? 0 : round2(5 + rnd() * 8);
       const salt: HwLedger = {
         opening: saltOpening,
         generation: saltGen,
         dateOfDisposal: "",
         dispatch: 0,
         manifestNo: "",
-        closing: round1(saltOpening + saltGen),
+        closing: round2(saltOpening + saltGen),
         remark: "",
       };
       saltOpening = salt.closing;
@@ -414,7 +414,7 @@ export function buildEtpEntries(): EtpEntry[] {
         roReject,
         roPermeate,
         sludgeToTSDF: 0,
-        totalWaterIntake: round1(fresh + etpReuse + roPermeate),
+        totalWaterIntake: round2(fresh + etpReuse + roPermeate),
         unit: "KL",
         status: d === 0 ? "pending" : "approved", // most recent day awaits review
         submittedAt: dayISO(d, "09:00"),

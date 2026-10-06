@@ -17,7 +17,7 @@ import { useDataStore, dailyIntake } from "@/lib/store/data";
 import { buildEtpStageFlow } from "@/lib/data/etp-flow";
 import { monthEntries, ledgerRollup, monthlyWaterTotal } from "@/lib/data/monthly";
 import { customColumnUnit, entryCustomTotal, entryMeterTotal } from "@/lib/data/etp-calc";
-import { round1 } from "@/lib/data/etp-calc";
+import { round2 } from "@/lib/data/etp-calc";
 import { STATUS_COLOR, complianceStatus, ALERT_META } from "@/lib/constants";
 import { formatNumber, formatDate, timeAgo, toCSV, stampedName } from "@/lib/utils";
 import { Zap } from "lucide-react";
@@ -91,7 +91,7 @@ export function EtpOverview() {
   const meeCondensateM3 = monthlyWaterTotal(monthlyEntries, "MEE_CONDENSATE");
   const meeRejectM3 = monthlyWaterTotal(monthlyEntries, "MEE_REJECT");
   const energyKwh = useMemo(
-    () => round1(monthlyEntries.reduce((s, e) => s + Object.values(e.energy ?? {}).reduce((a, m) => a + Number(m?.total ?? 0), 0), 0)),
+    () => round2(monthlyEntries.reduce((s, e) => s + Object.values(e.energy ?? {}).reduce((a, m) => a + Number(m?.total ?? 0), 0), 0)),
     [monthlyEntries],
   );
 
@@ -170,7 +170,7 @@ export function EtpOverview() {
       "MEE Reject (m³)": entryMeterTotal(e, "MEE_REJECT") ?? "",
       "Sludge Dispatch (kg)": e.sludge?.dispatch ?? "",
       "Salt Dispatch (kg)": e.salt?.dispatch ?? "",
-      "Energy (kWh)": e.energy ? round1(Object.values(e.energy).reduce((a, m) => a + Number(m?.total ?? 0), 0)) : "",
+      "Energy (kWh)": e.energy ? round2(Object.values(e.energy).reduce((a, m) => a + Number(m?.total ?? 0), 0)) : "",
       "Total Water Intake (m³)": e.totalWaterIntake,
       Status: e.status,
       "Submitted At": e.submittedAt,

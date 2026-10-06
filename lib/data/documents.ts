@@ -28,6 +28,9 @@ export { formatBytes, splitChunks, joinChunks, MAX_DOCUMENT_BYTES };
 
 export type UploadResult = { ok: true; meta: EtpDocumentMeta } | { ok: false; error: string };
 
+/** Plenty for a status note; bounded so the metadata document stays small. */
+export const MAX_REMARK_CHARS = 500;
+
 const metaRef = (industryId: string, docType: EtpDocumentType) => doc(db, "industries", industryId, "docs", docType);
 const chunksCol = (industryId: string, docType: EtpDocumentType) => collection(db, "industries", industryId, "docs", docType, "chunks");
 
@@ -103,6 +106,9 @@ export async function uploadDocument(input: {
       uploadedAt: new Date().toISOString(),
       uploadedByUid,
       complete: true,
+      // Carried explicitly: the setDoc below is a full-document write, so anything not
+      // named here would be erased on every replace.
+      ...(prev?.remark ? { remark: prev.remark, remarkAt: prev.remarkAt, remarkByUid: prev.remarkByUid } : {}),
     };
     await setDoc(metaRef(industryId, docType), meta);
     onProgress?.(1);
@@ -123,6 +129,33 @@ export async function uploadDocument(input: {
   }
 }
 
+/**
+ * Save (or clear) the operator's remark for one slot.
+ *
+ * `merge: true` is load-bearing twice over: it creates the metadata document for a slot that has
+ * no PDF yet, and it leaves every file field untouched on a slot that does.
+ */
+export async function saveDocumentRemark(
+  industryId: string,
+  docType: EtpDocumentType,
+  remark: string,
+  uid: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const text = remark.trim().slice(0, MAX_REMARK_CHARS);
+    await setDoc(
+      metaRef(industryId, docType),
+      { docType, remark: text, remarkAt: new Date().toISOString(), remarkByUid: uid },
+      { merge: true },
+    );
+    return { ok: true };
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? "";
+    if (code === "permission-denied") return { ok: false, error: "You do not have permission to edit this unit's documents." };
+    return { ok: false, error: "Could not save the remark. Check your connection and try again." };
+  }
+}
+
 /** All four slots' metadata for a unit, keyed by docType. Missing = not uploaded. */
 export async function listDocuments(industryId: string): Promise<Partial<Record<EtpDocumentType, EtpDocumentMeta>>> {
   const out: Partial<Record<EtpDocumentType, EtpDocumentMeta>> = {};
@@ -130,7 +163,8 @@ export async function listDocuments(industryId: string): Promise<Partial<Record<
     const snap = await getDocs(collection(db, "industries", industryId, "docs"));
     snap.forEach((d) => {
       const m = d.data() as EtpDocumentMeta;
-      if (m?.complete) out[d.id as EtpDocumentType] = m;
+      // A slot holding only a remark has no `complete` flag but is still real.
+      if (m?.complete || m?.remark) out[d.id as EtpDocumentType] = m;
     });
   } catch {
     // best-effort: an unreadable unit simply shows nothing uploaded
@@ -146,7 +180,7 @@ export function subscribeDocuments(industryId: string, onData: (docs: Partial<Re
       const out: Partial<Record<EtpDocumentType, EtpDocumentMeta>> = {};
       snap.forEach((d) => {
         const m = d.data() as EtpDocumentMeta;
-        if (m?.complete) out[d.id as EtpDocumentType] = m;
+        if (m?.complete || m?.remark) out[d.id as EtpDocumentType] = m;
       });
       onData(out);
     },

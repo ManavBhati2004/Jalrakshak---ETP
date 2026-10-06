@@ -5,7 +5,7 @@
    ============================================================ */
 
 import type { EtpEntry } from "@/lib/types";
-import { entryCustomTotal, round1 } from "@/lib/data/etp-calc";
+import { entryCustomTotal, round2 } from "@/lib/data/etp-calc";
 
 /** "YYYY-MM" key for a date-only string. */
 export function monthKey(date: string): string {
@@ -32,7 +32,7 @@ export function monthEntries(entries: EtpEntry[], industryId: string, month: str
 
 /** Σ of daily Total values for one water meter code across the month (master §13.2/§13.3). */
 export function monthlyWaterTotal(monthly: EtpEntry[], code: string): number {
-  return round1(monthly.reduce((s, e) => s + Number(e.water?.[code]?.total ?? 0), 0));
+  return round2(monthly.reduce((s, e) => s + Number(e.water?.[code]?.total ?? 0), 0));
 }
 
 /**
@@ -45,7 +45,7 @@ export const TRADE_EFFLUENT_RECYCLED_CODES = ["ETP_DIRECT_REUSE", "RO_PERMEATE_C
 
 /** Sigma of daily Totals across several water meters. Rounded once at the end - components are never pre-rounded. */
 export function monthlyWaterTotalOf(monthly: EtpEntry[], codes: readonly string[]): number {
-  return round1(monthly.reduce((s, e) => s + codes.reduce((t, c) => t + Number(e.water?.[c]?.total ?? 0), 0), 0));
+  return round2(monthly.reduce((s, e) => s + codes.reduce((t, c) => t + Number(e.water?.[c]?.total ?? 0), 0), 0));
 }
 
 /**
@@ -62,7 +62,7 @@ export function monthlyCustomTotal(monthly: EtpEntry[], columnId: string): numbe
     seen = true;
     sum += v;
   }
-  return seen ? round1(sum) : null;
+  return seen ? round2(sum) : null;
 }
 
 export interface LedgerRollup {
@@ -78,10 +78,10 @@ export function ledgerRollup(monthly: EtpEntry[], ledger: "sludge" | "salt"): Le
   const first = monthly[0][ledger];
   const last = monthly[monthly.length - 1][ledger];
   return {
-    openingKg: round1(first?.opening ?? 0),
-    generationKg: round1(monthly.reduce((s, e) => s + Number(e[ledger]?.generation ?? 0), 0)),
-    disposalKg: round1(monthly.reduce((s, e) => s + Number(e[ledger]?.dispatch ?? 0), 0)),
-    closingKg: round1(last?.closing ?? 0),
+    openingKg: round2(first?.opening ?? 0),
+    generationKg: round2(monthly.reduce((s, e) => s + Number(e[ledger]?.generation ?? 0), 0)),
+    disposalKg: round2(monthly.reduce((s, e) => s + Number(e[ledger]?.dispatch ?? 0), 0)),
+    closingKg: round2(last?.closing ?? 0),
   };
 }
 
@@ -95,8 +95,8 @@ export interface ManifestRow {
 export function manifestRows(monthly: EtpEntry[]): ManifestRow[] {
   const rows: ManifestRow[] = [];
   for (const e of monthly) {
-    if ((e.sludge?.dispatch ?? 0) > 0) rows.push({ date: e.sludge!.dateOfDisposal || e.date, manifestNo: e.sludge!.manifestNo, wasteType: "ETP SLUDGE", quantityKg: round1(e.sludge!.dispatch) });
-    if ((e.salt?.dispatch ?? 0) > 0) rows.push({ date: e.salt!.dateOfDisposal || e.date, manifestNo: e.salt!.manifestNo, wasteType: "ATFD SALT (MEE)", quantityKg: round1(e.salt!.dispatch) });
+    if ((e.sludge?.dispatch ?? 0) > 0) rows.push({ date: e.sludge!.dateOfDisposal || e.date, manifestNo: e.sludge!.manifestNo, wasteType: "ETP SLUDGE", quantityKg: round2(e.sludge!.dispatch) });
+    if ((e.salt?.dispatch ?? 0) > 0) rows.push({ date: e.salt!.dateOfDisposal || e.date, manifestNo: e.salt!.manifestNo, wasteType: "ATFD SALT (MEE)", quantityKg: round2(e.salt!.dispatch) });
   }
   return rows;
 }

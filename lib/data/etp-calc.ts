@@ -12,12 +12,13 @@ import {
   AUTHORISED_QUANTITY_WARNING_PERCENT,
 } from "@/lib/constants";
 
-/** Round to one decimal place. Coerces to Number and guards non-finite input (a stringy
- *  or NaN value returns 0 rather than propagating garbage), with symmetric FP-drift nudge. */
-export function round1(n: number): number {
+/** Round to two decimal places - the daily numeric standard. Coerces to Number and guards
+ *  non-finite input (a stringy or NaN value returns 0 rather than propagating garbage), with
+ *  symmetric FP-drift nudge. */
+export function round2(n: number): number {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
-  return Math.round((x + (x < 0 ? -Number.EPSILON : Number.EPSILON)) * 10) / 10;
+  return Math.round((x + (x < 0 ? -Number.EPSILON : Number.EPSILON)) * 100) / 100;
 }
 
 /** kg → MT at 3-dp (whole-kg resolution) — the single source of truth for all MT rendering. */
@@ -27,12 +28,12 @@ export function kgToMt(kg: number): number {
 
 /** Meter daily total = Final − Initial, one decimal. */
 export function meterTotal(initial: number, final: number): number {
-  return round1(final - initial);
+  return round2(final - initial);
 }
 
 /** Build a MeterReading from raw initial/final numbers (all rounded to 1 dp). */
 export function toMeterReading(initial: number, final: number): MeterReading {
-  return { initial: round1(initial), final: round1(final), total: meterTotal(initial, final) };
+  return { initial: round2(initial), final: round2(final), total: meterTotal(initial, final) };
 }
 
 /** Row status for the entry UI: total + the two blocking conditions. */
@@ -54,19 +55,19 @@ export function groupGrandTotals(water: Record<string, MeterReading>): Record<st
   const totals: Record<string, number> = { daily: 0, ro: 0, mee: 0 };
   for (const def of WATER_METERS) {
     if (RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON && def.code === "RO_PERMEATE_COMMON") continue;
-    totals[def.group] = round1(totals[def.group] + Number(water[def.code]?.total ?? 0));
+    totals[def.group] = round2(totals[def.group] + Number(water[def.code]?.total ?? 0));
   }
   return totals;
 }
 
 /** Sum of every water meter total (master §5.5 — NOT a dedup KPI). */
 export function computeGrandTotal(water: Record<string, MeterReading>): number {
-  return round1(Object.values(water).reduce((s, m) => s + Number(m?.total ?? 0), 0));
+  return round2(Object.values(water).reduce((s, m) => s + Number(m?.total ?? 0), 0));
 }
 
 /** Hazardous-waste closing balance = Opening + Generation − Dispatch (one decimal). */
 export function closingBalance(opening: number, generation: number, dispatch: number): number {
-  return round1(opening + generation - dispatch);
+  return round2(opening + generation - dispatch);
 }
 
 /** Build an HwLedger from raw inputs (server-authoritative closing). */
@@ -79,10 +80,10 @@ export function toLedger(input: {
   remark: string;
 }): HwLedger {
   return {
-    opening: round1(input.opening),
-    generation: round1(input.generation),
+    opening: round2(input.opening),
+    generation: round2(input.generation),
     dateOfDisposal: input.dateOfDisposal,
-    dispatch: round1(input.dispatch),
+    dispatch: round2(input.dispatch),
     manifestNo: input.manifestNo,
     closing: closingBalance(input.opening, input.generation, input.dispatch),
     remark: input.remark,
@@ -96,7 +97,7 @@ export function dispatchNeedsManifest(dispatch: number, manifestNo: string, date
 
 /** Dispatch must never exceed available stock (Opening + Generation). */
 export function dispatchExceedsStock(opening: number, generation: number, dispatch: number): boolean {
-  return round1(dispatch) > round1(opening + generation);
+  return round2(dispatch) > round2(opening + generation);
 }
 
 /* ---------------- Date helpers (date-only, local calendar) ---------------- */
@@ -171,13 +172,13 @@ export function localDateString(d: Date = new Date()): string {
  */
 export function entryMeterTotal(entry: EtpEntry, code: string): number | null {
   const v = entry.water?.[code]?.total;
-  return v == null ? null : round1(Number(v));
+  return v == null ? null : round2(Number(v));
 }
 
 /** As above, for an energy meter (Kwh). */
 export function entryEnergyTotal(entry: EtpEntry, code: string): number | null {
   const v = entry.energy?.[code]?.total;
-  return v == null ? null : round1(Number(v));
+  return v == null ? null : round2(Number(v));
 }
 
 /* ---------------- Custom columns (operator-defined meters) ---------------- */
@@ -195,9 +196,9 @@ export function customColumnUnit(col: { unit?: string }): string {
  */
 export function entryCustomTotal(entry: EtpEntry, columnId: string): number | null {
   const m = entry.customMeters?.[columnId]?.total;
-  if (m != null) return round1(Number(m));
+  if (m != null) return round2(Number(m));
   const legacy = entry.custom?.[columnId];
-  return legacy == null ? null : round1(Number(legacy));
+  return legacy == null ? null : round2(Number(legacy));
 }
 
 /** A custom column's stored Initial/Final for a day, or null when it holds no meter reading. */
@@ -228,7 +229,7 @@ export function carriedCustomFinal(entries: EtpEntry[], industryId: string, date
     )
     .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
   const v = prior?.customMeters?.[columnId]?.final;
-  return v == null ? null : round1(Number(v));
+  return v == null ? null : round2(Number(v));
 }
 
 /* ---------------- Carry-forward (master §5.3 / §9) ---------------- */
@@ -272,7 +273,7 @@ export function cumulativeDispatch(
   from?: string,
   to?: string,
 ): number {
-  return round1(
+  return round2(
     entries
       .filter(
         (e) =>
@@ -303,14 +304,14 @@ export function authorisedQuantityWarning(
 /** Usage breakdown for the UI (used / authorised / remaining / percent). */
 export function authorisationUsage(cumulativeKg: number, authorisedKg?: number) {
   if (!authorisedKg || authorisedKg <= 0) {
-    return { configured: false, usedKg: round1(cumulativeKg), authorisedKg: 0, remainingKg: 0, percent: 0 };
+    return { configured: false, usedKg: round2(cumulativeKg), authorisedKg: 0, remainingKg: 0, percent: 0 };
   }
   return {
     configured: true,
-    usedKg: round1(cumulativeKg),
-    authorisedKg: round1(authorisedKg),
-    remainingKg: round1(authorisedKg - cumulativeKg),
-    percent: round1((cumulativeKg / authorisedKg) * 100),
+    usedKg: round2(cumulativeKg),
+    authorisedKg: round2(authorisedKg),
+    remainingKg: round2(authorisedKg - cumulativeKg),
+    percent: round2((cumulativeKg / authorisedKg) * 100),
   };
 }
 
@@ -318,12 +319,12 @@ export function authorisationUsage(cumulativeKg: number, authorisedKg?: number) 
 
 /** kg = MT × 1000, one decimal. */
 export function mtToKg(mt: number): number {
-  return round1(mt * 1000);
+  return round2(mt * 1000);
 }
 
 /** Convert a source quantity in KG or MT to canonical kg (never double-converts). */
 export function toCanonicalKg(quantity: number, unit: "KG" | "MT"): number {
-  return unit === "MT" ? mtToKg(quantity) : round1(quantity);
+  return unit === "MT" ? mtToKg(quantity) : round2(quantity);
 }
 
 /* ---------------- Numeric standard (master §4) ---------------- */
@@ -331,8 +332,8 @@ export function toCanonicalKg(quantity: number, unit: "KG" | "MT"): number {
 export type NumericError = "NOT_NUMERIC" | "NEGATIVE" | "TOO_MANY_DECIMALS" | "VALUE_OUT_OF_RANGE";
 
 /**
- * Validate & normalise a daily numeric input: ≤7 integer digits, ≤1 decimal, nonnegative,
- * ≤ 9999999.9, no scientific notation. Empty string is allowed while typing (value = null).
+ * Validate & normalise a daily numeric input: ≤7 integer digits, ≤2 decimals, nonnegative,
+ * ≤ 9999999.99, no scientific notation. Empty string is allowed while typing (value = null).
  */
 export function parseDailyValue(raw: string): { value: number | null; error?: NumericError } {
   const s = raw.trim();
@@ -344,10 +345,10 @@ export function parseDailyValue(raw: string): { value: number | null; error?: Nu
   if (!/^\d*(\.\d*)?$/.test(s)) return { value: null, error: "NOT_NUMERIC" };
   const [intPart = "", decPart = ""] = s.split(".");
   if (intPart.length > 7) return { value: null, error: "VALUE_OUT_OF_RANGE" };
-  if (decPart.length > 1) return { value: null, error: "TOO_MANY_DECIMALS" };
+  if (decPart.length > 2) return { value: null, error: "TOO_MANY_DECIMALS" };
   const value = Number(s);
   if (!Number.isFinite(value)) return { value: null, error: "NOT_NUMERIC" };
   if (value < 0) return { value: null, error: "NEGATIVE" };
   if (value > DAILY_MAX_VALUE) return { value: null, error: "VALUE_OUT_OF_RANGE" };
-  return { value: round1(value) };
+  return { value: round2(value) };
 }

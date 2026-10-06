@@ -8,7 +8,7 @@
 
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
-import { round1, kgToMt, toCanonicalKg, customColumnUnit, entryCustomReading, entryCustomTotal } from "@/lib/data/etp-calc";
+import { round2, kgToMt, toCanonicalKg, customColumnUnit, entryCustomReading, entryCustomTotal } from "@/lib/data/etp-calc";
 import { monthEntries, ledgerRollup, monthlyWaterTotal, monthlyWaterTotalOf, monthlyCustomTotal, TRADE_EFFLUENT_RECYCLED_CODES, daysInMonth, manifestRows } from "@/lib/data/monthly";
 
 type XLSXModule = typeof import("xlsx-js-style");
@@ -81,12 +81,12 @@ function meterSheet(
       const m = readings?.[s.code];
       row.push("", m?.initial ?? "", m?.final ?? "", m?.total ?? "");
       if (m) {
-        perSection[i] = round1(perSection[i] + m.total);
-        if (!cfg.excludeCodes?.includes(s.code)) rowGrand = round1(rowGrand + m.total);
+        perSection[i] = round2(perSection[i] + m.total);
+        if (!cfg.excludeCodes?.includes(s.code)) rowGrand = round2(rowGrand + m.total);
       }
     });
     row.push(e ? rowGrand : "");
-    if (e) grandSum = round1(grandSum + rowGrand);
+    if (e) grandSum = round2(grandSum + rowGrand);
     rows.push(row);
   }
 

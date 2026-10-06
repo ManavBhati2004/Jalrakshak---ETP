@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
 import { registerUnitWithLogin } from "@/lib/store/accounts";
 import { writeOwnedIndustry } from "@/lib/data/firestore-storage";
-import { toCanonicalKg, round1 } from "@/lib/data/etp-calc";
+import { toCanonicalKg, round2 } from "@/lib/data/etp-calc";
 import { cn, formatNumber } from "@/lib/utils";
 
 /**
@@ -167,7 +167,7 @@ export function RegistrationForm() {
           hwmValidFrom: v.hwmValidFrom,
           hwmValidTo: v.hwmValidTo,
           authorisedQuantityKg: toCanonicalKg(v.authorisedSourceQuantity, v.authorisedSourceUnit),
-          authorisedSourceQuantity: round1(v.authorisedSourceQuantity),
+          authorisedSourceQuantity: round2(v.authorisedSourceQuantity),
           authorisedSourceUnit: v.authorisedSourceUnit,
           tsdfName: v.tsdfName,
           tsdfAddress: v.tsdfAddress,

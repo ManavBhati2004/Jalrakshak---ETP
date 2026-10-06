@@ -1,11 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileText, Upload, Eye, Download, CheckCircle2, TriangleAlert } from "lucide-react";
+import { FileText, Upload, Eye, Download, CheckCircle2, TriangleAlert, MessageSquare, Save } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ETP_DOCUMENT_TYPES, type EtpDocumentMeta, type EtpDocumentType } from "@/lib/types";
-import { fetchDocumentBlob, formatBytes, presentBlob, subscribeDocuments, uploadDocument, MAX_DOCUMENT_BYTES } from "@/lib/data/documents";
+import { fetchDocumentBlob, formatBytes, presentBlob, saveDocumentRemark, subscribeDocuments, uploadDocument, MAX_DOCUMENT_BYTES, MAX_REMARK_CHARS } from "@/lib/data/documents";
 import { formatDate } from "@/lib/utils";
 
 /**
@@ -74,7 +74,18 @@ export function DocumentsPanel({
     [industryId, uid],
   );
 
-  const uploadedCount = ETP_DOCUMENT_TYPES.filter((t) => docs[t.code]).length;
+  const onSaveRemark = useCallback(
+    async (docType: EtpDocumentType, remark: string) => {
+      if (!uid) return;
+      const res = await saveDocumentRemark(industryId, docType, remark, uid);
+      if (!res.ok) toast.error("Remark not saved", { description: res.error });
+      else toast.success(remark.trim() ? "Remark saved" : "Remark cleared");
+    },
+    [industryId, uid],
+  );
+
+  // A slot counts as "on file" only when it holds a PDF - a remark alone is not a document.
+  const uploadedCount = ETP_DOCUMENT_TYPES.filter((t) => docs[t.code]?.complete).length;
 
   return (
     <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">
@@ -104,6 +115,7 @@ export function DocumentsPanel({
             canUpload={canUpload}
             onOpen={(mode) => open(t.code, mode)}
             onPick={(f) => onPick(t.code, f)}
+            onSaveRemark={(r) => onSaveRemark(t.code, r)}
           />
         ))}
       </div>
@@ -126,6 +138,7 @@ function DocumentSlot({
   canUpload,
   onOpen,
   onPick,
+  onSaveRemark,
 }: {
   type: { code: EtpDocumentType; label: string; hint: string };
   meta?: EtpDocumentMeta;
@@ -135,9 +148,23 @@ function DocumentSlot({
   canUpload: boolean;
   onOpen: (mode: "view" | "download") => void;
   onPick: (file: File | undefined) => void;
+  onSaveRemark: (remark: string) => Promise<void>;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const uploaded = !!meta;
+  // A remark-only slot has metadata but no PDF, so the file controls key off `complete`.
+  const uploaded = !!meta?.complete;
+  const savedRemark = meta?.remark ?? "";
+  const [remark, setRemark] = useState(savedRemark);
+  const [savingRemark, setSavingRemark] = useState(false);
+  // Re-sync when another device edits the same slot, but never clobber an in-progress edit.
+  const lastSaved = useRef(savedRemark);
+  useEffect(() => {
+    if (savedRemark !== lastSaved.current) {
+      lastSaved.current = savedRemark;
+      setRemark(savedRemark);
+    }
+  }, [savedRemark]);
+  const dirty = remark.trim() !== savedRemark.trim();
 
   return (
     <div className={`rounded-xl border p-3 transition-colors ${uploaded ? "border-primary/40 bg-primary/5" : "border-dashed border-border bg-muted/20"}`}>
@@ -162,7 +189,7 @@ function DocumentSlot({
       <p className="mt-2 min-h-[2.25rem] text-[11px] text-muted-foreground">
         {loading ? (
           "Checking…"
-        ) : meta ? (
+        ) : uploaded && meta ? (
           <>
             <span className="block truncate font-medium text-foreground">{meta.filename}</span>
             Last updated {formatDate(meta.uploadedAt)} · {formatBytes(meta.size)}
@@ -214,6 +241,57 @@ function DocumentSlot({
             </Button>
           </>
         ) : null}
+      </div>
+
+      {/* Remark — status, validity, pending requirements, notice details. Deliberately usable on
+          a slot with no PDF yet, which is exactly when "renewal pending" needs recording. */}
+      <div className="mt-3 border-t border-border/60 pt-3">
+        <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <MessageSquare className="h-3 w-3" /> Remark
+        </p>
+        {canUpload ? (
+          <>
+            <textarea
+              value={remark}
+              onChange={(e) => setRemark(e.target.value.slice(0, MAX_REMARK_CHARS))}
+              rows={2}
+              aria-label={`Remark for ${type.label}`}
+              placeholder="Status, validity, pending requirements, notice details…"
+              className="w-full resize-y rounded-lg border border-border bg-background px-2 py-1.5 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
+            />
+            <div className="mt-1.5 flex items-center justify-between gap-2">
+              <span className="text-[10px] text-muted-foreground">
+                {meta?.remarkAt ? `Updated ${formatDate(meta.remarkAt)}` : "Not set"}
+              </span>
+              {/* Only on an actual change — saving per keystroke would write to Firestore per character. */}
+              {dirty ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={savingRemark}
+                  onClick={async () => {
+                    setSavingRemark(true);
+                    try {
+                      await onSaveRemark(remark);
+                    } finally {
+                      setSavingRemark(false);
+                    }
+                  }}
+                  className="h-7 gap-1.5 rounded-lg"
+                >
+                  <Save className="h-3 w-3" /> {savingRemark ? "Saving…" : "Save Remark"}
+                </Button>
+              ) : null}
+            </div>
+          </>
+        ) : savedRemark ? (
+          <p className="whitespace-pre-wrap text-xs text-foreground">
+            {savedRemark}
+            {meta?.remarkAt ? <span className="mt-1 block text-[10px] text-muted-foreground">Updated {formatDate(meta.remarkAt)}</span> : null}
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">No remark recorded.</p>
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  round1,
+  round2,
   kgToMt,
   meterTotal,
   groupGrandTotals,
@@ -29,19 +29,27 @@ import {
   toMeterReading,
 } from "./etp-calc";
 import type { EtpEntry } from "@/lib/types";
+import { DAILY_MAX_VALUE } from "@/lib/constants";
 
 /* ---------------- Numeric validation (master §19.1) ---------------- */
-describe("parseDailyValue — numeric standard (≤7 int, ≤1 decimal)", () => {
-  it("accepts 0, 0.0, 9999999.9", () => {
+describe("parseDailyValue — numeric standard (≤7 int, ≤2 decimals)", () => {
+  it("accepts 0, 0.0, 9999999.99", () => {
     expect(parseDailyValue("0").value).toBe(0);
     expect(parseDailyValue("0.0").value).toBe(0);
     expect(parseDailyValue("9999999.9").value).toBe(9999999.9);
+    expect(parseDailyValue("9999999.99").value).toBe(9999999.99);
   });
   it("rejects 10000000.0 (>7 integer digits / over max)", () => {
     expect(parseDailyValue("10000000.0").error).toBeDefined();
   });
-  it("rejects more than one decimal (12.34)", () => {
-    expect(parseDailyValue("12.34").error).toBe("TOO_MANY_DECIMALS");
+  it("accepts two decimals — the client's readings (2308.16, 125.25, 586.75)", () => {
+    expect(parseDailyValue("12.34").value).toBe(12.34);
+    expect(parseDailyValue("2308.16").value).toBe(2308.16);
+    expect(parseDailyValue("125.25").value).toBe(125.25);
+    expect(parseDailyValue("586.75").value).toBe(586.75);
+  });
+  it("rejects more than two decimals (12.345)", () => {
+    expect(parseDailyValue("12.345").error).toBe("TOO_MANY_DECIMALS");
   });
   it("rejects negatives (-1.0)", () => {
     expect(parseDailyValue("-1.0").error).toBeDefined();
@@ -184,11 +192,24 @@ describe("dateRangeValid", () => {
 });
 
 /* ---------------- Hardening: coercion, guards, MT, draft-exclusion ---------------- */
-describe("round1 — coerces & guards non-finite (no garbage propagation)", () => {
-  it("coerces numeric strings", () => expect(round1("125.44" as unknown as number)).toBe(125.4));
-  it("NaN → 0", () => expect(round1(NaN)).toBe(0));
-  it("Infinity → 0", () => expect(round1(Infinity)).toBe(0));
-  it("non-numeric string → 0", () => expect(round1("abc" as unknown as number)).toBe(0));
+describe("round2 — two-decimal standard, coerces & guards non-finite", () => {
+  it("keeps the second decimal", () => {
+    expect(round2(2308.16)).toBe(2308.16);
+    expect(round2(125.25)).toBe(125.25);
+    expect(round2(586.75)).toBe(586.75);
+  });
+  it("rounds away the third decimal", () => {
+    expect(round2(12.345)).toBe(12.35);
+    expect(round2(12.344)).toBe(12.34);
+  });
+  it("survives floating-point drift", () => {
+    expect(round2(0.1 + 0.2)).toBe(0.3);
+    expect(round2(1.005 * 100 / 100)).toBe(1.01);
+  });
+  it("coerces numeric strings", () => expect(round2("125.44" as unknown as number)).toBe(125.44));
+  it("NaN → 0", () => expect(round2(NaN)).toBe(0));
+  it("Infinity → 0", () => expect(round2(Infinity)).toBe(0));
+  it("non-numeric string → 0", () => expect(round2("abc" as unknown as number)).toBe(0));
 });
 
 describe("kgToMt — single source of truth (3-dp MT)", () => {
@@ -276,9 +297,11 @@ describe("entryMeterTotal / entryEnergyTotal — MEE and energy accessors", () =
     expect(entryMeterTotal(e, "MEE_FEED")).toBeNull();
   });
 
-  it("reads energy meters and rounds to the daily standard", () => {
-    const e: EtpEntry = { ...base(), energy: { ETP_POWER: { initial: 100, final: 251.55, total: 151.55 } } };
-    expect(entryEnergyTotal(e, "ETP_POWER")).toBe(151.6);
+  it("reads energy meters at the two-decimal daily standard", () => {
+    // The fixture carries a THIRD decimal on purpose: asserting 151.55 against a 151.55
+    // fixture would still pass if the rounding were removed entirely.
+    const e: EtpEntry = { ...base(), energy: { ETP_POWER: { initial: 100, final: 251.555, total: 151.555 } } };
+    expect(entryEnergyTotal(e, "ETP_POWER")).toBe(151.56);
   });
 });
 
@@ -328,8 +351,9 @@ describe("custom columns — meter accessors across both storage eras", () => {
     expect(entryCustomTotal(e, "CC-B")).toBeNull();
   });
 
-  it("rounds to the one-decimal daily standard", () => {
-    expect(entryCustomTotal(base({ custom: { "CC-A": 151.55 } }), "CC-A")).toBe(151.6);
+  it("rounds to the two-decimal daily standard", () => {
+    expect(entryCustomTotal(base({ custom: { "CC-A": 151.55 } }), "CC-A")).toBe(151.55);
+    expect(entryCustomTotal(base({ custom: { "CC-A": 151.555 } }), "CC-A")).toBe(151.56);
   });
 });
 
@@ -493,5 +517,64 @@ describe("localDateString", () => {
   it("agrees with the local getters at the very start of a day", () => {
     const d = new Date(2026, 9, 1, 0, 0, 0);
     expect(localDateString(d)).toBe("2026-10-01");
+  });
+});
+
+/* ============================================================================
+   The two-decimal standard end to end: a reading entered as 2308.16 must keep
+   both decimals through the meter maths, the ledgers and the group totals.
+   ========================================================================== */
+describe("two-decimal standard flows through the meter and ledger maths", () => {
+  it("meterTotal keeps the second decimal", () => {
+    expect(meterTotal(2308.16, 2400.41)).toBe(92.25);
+    expect(meterTotal(100, 125.25)).toBe(25.25);
+  });
+
+  it("toMeterReading stores all three figures at 2 dp", () => {
+    expect(toMeterReading(2308.16, 2894.91)).toEqual({ initial: 2308.16, final: 2894.91, total: 586.75 });
+  });
+
+  it("closingBalance keeps the second decimal on kg ledgers", () => {
+    expect(closingBalance(120.55, 30.25, 50.5)).toBe(100.3);
+    expect(closingBalance(0, 1234.56, 0)).toBe(1234.56);
+  });
+
+  it("group grand totals sum 2-dp meters without drifting", () => {
+    const water = {
+      RAW_FRESH_WATER: { initial: 0, final: 10.11, total: 10.11 },
+      ETP_INLET_ALL_STREAMS: { initial: 0, final: 20.22, total: 20.22 },
+      TERTIARY_TREATED: { initial: 0, final: 30.33, total: 30.33 },
+      ETP_DIRECT_REUSE: { initial: 0, final: 0.34, total: 0.34 },
+    };
+    expect(groupGrandTotals(water).daily).toBe(61);
+  });
+
+  it("accumulates the client's own readings without 1-dp drift", () => {
+    // Through a 1-dp accumulator these three sum to 3020.3 instead of 3020.16 - the failure
+    // that would make the regulator workbook's columns stop adding up.
+    const water = {
+      RAW_FRESH_WATER: { initial: 0, final: 2308.16, total: 2308.16 },
+      ETP_INLET_ALL_STREAMS: { initial: 0, final: 125.25, total: 125.25 },
+      TERTIARY_TREATED: { initial: 0, final: 586.75, total: 586.75 },
+      ETP_DIRECT_REUSE: { initial: 0, final: 0, total: 0 },
+    };
+    expect(groupGrandTotals(water).daily).toBe(3020.16);
+  });
+
+  it("tightens the stock guard to the cent", () => {
+    // Was false at 1 dp: a dispatch overdrawing by under 0.05 kg used to slip through.
+    expect(dispatchExceedsStock(100, 0, 100.04)).toBe(true);
+    expect(dispatchExceedsStock(100, 0, 100)).toBe(false);
+  });
+
+  it("stops truncating a 2-dp kg quantity on registration", () => {
+    expect(toCanonicalKg(586.75, "KG")).toBe(586.75); // was 586.8
+    expect(toCanonicalKg(15.42, "MT")).toBe(15420);
+  });
+
+  it("the ceiling moved with the standard", () => {
+    expect(DAILY_MAX_VALUE).toBe(9999999.99);
+    expect(parseDailyValue("9999999.99").error).toBeUndefined();
+    expect(parseDailyValue("10000000").error).toBeDefined();
   });
 });

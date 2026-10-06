@@ -97,8 +97,9 @@ export const READING_TIMES = [
 /* ---------------- RSPCB prescribed daily meters (from the real client Excel) ----------------
    Source of truth: "7. MAYANK TEXOFIN JULY 2026.xlsx" (analysed in the feasibility report).
    12 water meters split exactly as the workbook's three water sheets (Daily / RO / MEE),
-   3 energy meters (kWh sheet). Labels reproduced VERBATIM for print/PDF output; stable codes
-   for storage. Water unit "M3", energy unit "Kwh". */
+   3 energy meters (kWh sheet). Labels are the client's own section wording for print/PDF output
+   (the RO five were revised by the client in Oct 2026); stable codes for storage, so relabelling
+   never moves a stored reading. Water unit "M3", energy unit "Kwh". */
 export type WaterGroup = "daily" | "ro" | "mee";
 
 export interface WaterMeterDef {
@@ -116,21 +117,21 @@ export const WATER_METERS: readonly WaterMeterDef[] = [
   { code: "TERTIARY_TREATED", label: "Tertiary Treated Section- Outlet", group: "daily" },
   { code: "ETP_DIRECT_REUSE", label: "ETP Treated directly Reuse", group: "daily", legacyKey: "etpReuse" },
   // --- RO sheet (5) ---
-  { code: "RO_FEED_1_2", label: "RO FEED ( 1st & 2nd Stage )", group: "ro", legacyKey: "roInlet" },
-  { code: "RO_PERMEATE_COMMON", label: "Total RO permeate Common Meter", group: "ro", legacyKey: "roPermeate" },
-  { code: "RO_REJECT_1_2", label: "RO Reject Section-Total", group: "ro", legacyKey: "roReject" },
-  { code: "RO_PERMEATE_3_4", label: "RO Permeate ( 3rd & 4th Stage )", group: "ro" },
-  { code: "RO_REJECT_3_4", label: "RO Reject ( 3rd & 4th Stage )", group: "ro" },
+  { code: "RO_FEED_1_2", label: "RO FEED (1ST & 2ND STAGE / COMMON)", group: "ro", legacyKey: "roInlet" },
+  { code: "RO_PERMEATE_COMMON", label: "RO PERMEATE (1ST & 2ND STAGE / COMMON)", group: "ro", legacyKey: "roPermeate" },
+  { code: "RO_REJECT_1_2", label: "RO REJECT (1ST & 2ND STAGE / COMMON)", group: "ro", legacyKey: "roReject" },
+  { code: "RO_PERMEATE_3_4", label: "RO PERMEATE (3RD & 4TH STAGE)", group: "ro" },
+  { code: "RO_REJECT_3_4", label: "RO REJECT (3RD & 4TH STAGE)", group: "ro" },
   // --- MEE sheet (3) ---
   { code: "MEE_FEED", label: "Total MEE Feed", group: "mee" },
   { code: "MEE_CONDENSATE", label: "Total MEE Condensate", group: "mee" },
   { code: "MEE_REJECT", label: "Total MEE Reject", group: "mee" },
 ] as const;
 
-export const WATER_GROUPS: { id: WaterGroup; label: string; unit: string }[] = [
-  { id: "daily", label: "Daily Log — Fresh / ETP / Tertiary / Reuse", unit: "M3" },
-  { id: "ro", label: "RO Section", unit: "M3" },
-  { id: "mee", label: "MEE Section", unit: "M3" },
+export const WATER_GROUPS: { id: WaterGroup; label: string; unit: string; totalLabel: string }[] = [
+  { id: "daily", label: "Daily Log — Fresh / ETP / Tertiary / Reuse", unit: "M3", totalLabel: "ETP Daily Grand Total" },
+  { id: "ro", label: "RO Section", unit: "M3", totalLabel: "RO Grand Total" },
+  { id: "mee", label: "MEE Section", unit: "M3", totalLabel: "MEE Grand Total" },
 ];
 
 export interface EnergyMeterDef {
@@ -163,11 +164,11 @@ export const RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON = true;
 export const AUTHORISED_QUANTITY_WARNING_PERCENT = 80;
 
 /**
- * Daily numeric standard (master prompt §4): up to 7 integer digits + 1 decimal place,
- * nonnegative, max 9999999.9. Applied to water/energy readings and kg waste quantities.
+ * Daily numeric standard: up to 7 integer digits + 2 decimal places, nonnegative,
+ * max 9999999.99. Applied to water/energy readings and kg waste quantities.
  */
-export const DAILY_MAX_VALUE = 9999999.9;
-export const DAILY_DECIMAL_REGEX = /^\d{0,7}(\.\d?)?$/;
+export const DAILY_MAX_VALUE = 9999999.99;
+export const DAILY_DECIMAL_REGEX = /^\d{0,7}(\.\d{0,2})?$/;
 
 /* ---------------- Alert metadata ---------------- */
 export const ALERT_META: Record<

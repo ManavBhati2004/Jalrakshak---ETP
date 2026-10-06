@@ -2,7 +2,7 @@
 
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
-import { round1, kgToMt } from "@/lib/data/etp-calc";
+import { round2, kgToMt } from "@/lib/data/etp-calc";
 import { daysInMonth, ledgerRollup } from "@/lib/data/monthly";
 import { formatNumber, formatDate } from "@/lib/utils";
 
@@ -99,12 +99,12 @@ function MeterGrid({
             const cells = sections.map((s) => {
               const m = readings?.[s.code];
               if (m) {
-                colTotals[s.code] = round1((colTotals[s.code] ?? 0) + m.total);
-                if (!exclude.includes(s.code)) rowGrand = round1(rowGrand + m.total);
+                colTotals[s.code] = round2((colTotals[s.code] ?? 0) + m.total);
+                if (!exclude.includes(s.code)) rowGrand = round2(rowGrand + m.total);
               }
               return m ? formatNumber(m.total) : "";
             });
-            if (e) grandSum = round1(grandSum + rowGrand);
+            if (e) grandSum = round2(grandSum + rowGrand);
             return (
               <tr key={d} className={e ? "" : "mps-missing"}>
                 <td className="mps-date">{formatDate(d)}</td>
