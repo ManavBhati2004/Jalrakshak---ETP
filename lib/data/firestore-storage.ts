@@ -5,6 +5,7 @@ import {
   getDocs,
   onSnapshot,
   setDoc,
+  waitForPendingWrites,
   type Unsubscribe,
 } from "firebase/firestore";
 import type { StateStorage } from "zustand/middleware";
@@ -47,7 +48,7 @@ export interface StoreData {
 }
 
 /** One industry's slice of the dataset. */
-interface IndustrySlice {
+export interface IndustrySlice {
   industry: Industry | null;
   readings: FlowMeterReading[];
   etpEntries: EtpEntry[];
@@ -104,6 +105,47 @@ const lastWrittenJson = new Map<string, string>();
 export function resetSyncCaches() {
   lastWriteAt.clear();
   lastWrittenJson.clear();
+}
+
+/**
+ * Record that `industries/{id}` now holds exactly `json` at `updatedAt`, written by a transaction
+ * rather than by `writeSlice`. Both caches must move together:
+ *  - `lastWrittenJson` so the next unrelated store change does not blindly rewrite this doc
+ *    (it compares against what was last written, and the transaction wrote it, not writeSlice);
+ *  - `lastWriteAt` so our own snapshot echo is not re-applied over the store as a foreign change.
+ */
+export function markSynced(id: string, json: string, updatedAt: number) {
+  lastWrittenJson.set(id, json);
+  lastWriteAt.set(id, updatedAt);
+}
+
+/* Write-loops still running. Each store change starts one; a transaction must not begin while one
+   is mid-flight, because that loop holds a pre-transaction snapshot and would land it afterwards,
+   blindly overwriting the commit. */
+let inflightWalks = 0;
+const idleWaiters: Array<() => void> = [];
+
+/**
+ * Wait until every local write has left AND been acknowledged by the server, so a transaction that
+ * follows is the last word. Resolves false on timeout (e.g. offline) - the caller then refuses to
+ * proceed rather than racing a write it cannot see.
+ */
+export async function quiesceLocalWrites(timeoutMs = 10_000): Promise<boolean> {
+  const idle = inflightWalks === 0 ? Promise.resolve() : new Promise<void>((r) => idleWaiters.push(r));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((r) => {
+    timer = setTimeout(() => r(false), timeoutMs);
+  });
+  try {
+    return await Promise.race([idle.then(() => waitForPendingWrites(db)).then(() => true as const), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** True unless this client already holds a NEWER version of the doc than `updatedAt`. */
+export function isNewerThanKnown(id: string, updatedAt: number): boolean {
+  return updatedAt >= (lastWriteAt.get(id) ?? 0);
 }
 
 /** Group a flat dataset into per-industry slices, keyed by industryId. */
@@ -199,10 +241,15 @@ export const firestoreStorage: StateStorage = {
       return;
     }
     const slices = shardByIndustry(data);
-    for (const [id, slice] of slices) {
-      const canWrite = role === "monitoring-admin" || id === industryId;
-      if (!canWrite) continue; // rules would reject it anyway — skip the round-trip
-      await writeSlice(id, slice);
+    inflightWalks++;
+    try {
+      for (const [id, slice] of slices) {
+        const canWrite = role === "monitoring-admin" || id === industryId;
+        if (!canWrite) continue; // rules would reject it anyway — skip the round-trip
+        await writeSlice(id, slice);
+      }
+    } finally {
+      if (--inflightWalks === 0) idleWaiters.splice(0).forEach((w) => w());
     }
   },
   removeItem: async () => {

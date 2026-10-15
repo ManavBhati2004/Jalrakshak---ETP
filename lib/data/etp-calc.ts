@@ -4,7 +4,7 @@
    client Excel; behaviour follows the master prompt (FE/CR/JALRAKSHAK/001 R2).
    ============================================================ */
 
-import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type MeterReading, type HwLedger } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type MeterIssue, type MeterReading, type HwLedger } from "@/lib/types";
 import {
   WATER_METERS,
   RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON,
@@ -218,6 +218,11 @@ export function entryCustomReading(entry: EtpEntry, columnId: string): MeterRead
  * reading it as one would fabricate a baseline.
  */
 export function carriedCustomFinal(entries: EtpEntry[], industryId: string, date: string, columnId: string): number | null {
+  return carriedCustomSource(entries, industryId, date, columnId)?.value ?? null;
+}
+
+/** As `carriedCustomFinal`, but also says which day the value came from (needed for baselines). */
+export function carriedCustomSource(entries: EtpEntry[], industryId: string, date: string, columnId: string): { value: number; fromDate: string } | null {
   const prior = entries
     .filter(
       (e) =>
@@ -229,7 +234,170 @@ export function carriedCustomFinal(entries: EtpEntry[], industryId: string, date
     )
     .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
   const v = prior?.customMeters?.[columnId]?.final;
-  return v == null ? null : round2(Number(v));
+  return v == null || !prior ? null : { value: round2(Number(v)), fromDate: prior.date };
+}
+
+/* ---------------- Meter baselines (reset / resume by the Monitoring Body) ----------------
+   A meter reset or replacement starts a NEW reading sequence. The old readings are history and
+   stay exactly as filed; the first reading of the new sequence takes its Initial from the
+   Monitoring Body's baseline instead of the previous day's Final. Usage is still Final − Initial
+   within one sequence, so it is never computed ACROSS a reset (15480 then a reset to 0 then 120 is
+   120, not −15360), and the baseline itself is never counted as consumption. */
+
+/** The parts of a resolved meter issue that sequencing needs. */
+export interface MeterBaseline {
+  meterKey: string;
+  newBaseline: number;
+  /** The old meter's last reading when the reset was made (null if none) - shown, never used in the maths. */
+  previousReading: number | null;
+  /** The last date that already held a reading for this meter when the reset was made ("" if none). */
+  afterDate: string;
+  /** The plant date the reset took effect, from the server's clock. */
+  effectiveDate: string;
+  /** The issue's number for this meter: a later resolution always has a higher one. */
+  order: number;
+}
+
+/** `water:CODE` / `energy:CODE` / `custom:CC-...` - a stable id, never a label or a position. */
+export function meterKeyOf(kind: "water" | "energy" | "custom", code: string): string {
+  return `${kind}:${code}`;
+}
+
+/**
+ * Document id of a meter's n-th issue: `water.RAW_FRESH_WATER.3`. The ':' becomes '.' because in the
+ * last segment of a REST path a colon reads as a custom method. firestore.rules rebuilds this id from
+ * the document's own fields (`issueIdOf`), so the two must stay in step.
+ */
+export function issueDocId(meterKey: string, seq: number): string {
+  return `${meterKey.replace(":", ".")}.${seq}`;
+}
+
+/** The highest issue number raised for a meter so far, or 0 if none. */
+export function lastIssueSeq(issues: readonly { meterKey: string; seq: number }[], meterKey: string): number {
+  return issues.reduce((m, i) => (i.meterKey === meterKey && Number.isInteger(i.seq) && i.seq > m ? i.seq : m), 0);
+}
+
+/** The meter's unresolved issue, if it has one (the rules allow at most one per meter). */
+export function openIssueFor<T extends { meterKey: string; status: string }>(issues: readonly T[], meterKey: string): T | undefined {
+  return issues.find((i) => i.meterKey === meterKey && i.status === "OPEN");
+}
+
+/**
+ * The plant's calendar date for an instant: India Standard Time, UTC+5:30, no daylight saving. Fixed
+ * rather than the viewer's own zone, so the operator and every officer place a server-stamped reset on
+ * the same day - and therefore sequence the readings identically.
+ */
+export function istDateString(at: string | number | Date): string {
+  const ms = new Date(at).getTime();
+  if (!Number.isFinite(ms)) return "";
+  return new Date(ms + 330 * 60_000).toISOString().slice(0, 10);
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Resolved issues as the baselines the entry form sequences readings by. An issue missing anything
+ * sequencing depends on is DROPPED, never defaulted: an empty effective date would compare below every
+ * real date and silently pull the meter's whole history into a new sequence.
+ */
+export function baselinesFrom(issues: readonly MeterIssue[]): MeterBaseline[] {
+  const out: MeterBaseline[] = [];
+  for (const i of issues) {
+    if (i.status !== "RESOLVED") continue;
+    const effectiveDate = i.resolvedAt ? istDateString(i.resolvedAt) : "";
+    if (
+      typeof i.meterKey !== "string" ||
+      !i.meterKey ||
+      typeof i.newBaseline !== "number" ||
+      !Number.isFinite(i.newBaseline) ||
+      i.newBaseline < 0 ||
+      typeof i.afterDate !== "string" ||
+      (i.afterDate !== "" && !ISO_DATE.test(i.afterDate)) ||
+      !ISO_DATE.test(effectiveDate) ||
+      !Number.isInteger(i.seq) ||
+      i.seq < 1
+    ) {
+      continue;
+    }
+    out.push({
+      meterKey: i.meterKey,
+      newBaseline: round2(i.newBaseline),
+      previousReading: typeof i.previousReading === "number" ? i.previousReading : null,
+      afterDate: i.afterDate,
+      effectiveDate,
+      order: i.seq,
+    });
+  }
+  return out;
+}
+
+/** The stored reading for a meter key on one entry, if that entry recorded it. */
+function readingFor(e: EtpEntry, meterKey: string): MeterReading | undefined {
+  const i = meterKey.indexOf(":");
+  const kind = meterKey.slice(0, i);
+  const code = meterKey.slice(i + 1);
+  if (kind === "water") return e.water?.[code];
+  if (kind === "energy") return e.energy?.[code];
+  if (kind === "custom") return e.customMeters?.[code];
+  return undefined;
+}
+
+/**
+ * The meter's latest saved reading in ANY status - drafts and pending entries included, because a
+ * reading already saved is an observation of the OLD meter whatever its review state. Used both for
+ * the reading shown when an issue is reported and, from the server copy, to fix where the old
+ * sequence ends when it is resolved.
+ */
+export function latestMeterReading(entries: readonly EtpEntry[], industryId: string, meterKey: string): { value: number; date: string } | null {
+  let best: { value: number; date: string } | null = null;
+  for (const e of entries) {
+    if (e.industryId !== industryId) continue;
+    const r = readingFor(e, meterKey);
+    if (r?.final == null) continue;
+    if (!best || e.date > best.date) best = { value: round2(Number(r.final)), date: e.date };
+  }
+  return best;
+}
+
+/**
+ * Whether `date` falls in the new sequence a baseline started. Strictly after the last day that
+ * already held a reading - so an existing entry for the reset day, even a pending draft, stays in
+ * the old sequence - and never before the day the reset was made, so backfilling a missed day from
+ * BEFORE the reset still belongs to the old meter.
+ */
+export function inBaselineSequence(b: MeterBaseline, date: string): boolean {
+  return date > b.afterDate && date >= b.effectiveDate;
+}
+
+/** The latest baseline whose sequence contains `date`, if any (a meter may be reset twice). */
+export function activeBaseline(baselines: readonly MeterBaseline[], meterKey: string, date: string): MeterBaseline | undefined {
+  let best: MeterBaseline | undefined;
+  for (const b of baselines) {
+    if (b.meterKey !== meterKey || !inBaselineSequence(b, date)) continue;
+    // Issue numbers order resolutions exactly; no device clock is involved.
+    if (!best || b.order > best.order) best = b;
+  }
+  return best;
+}
+
+/**
+ * The Initial for a meter on `date`, given the ordinary carry (the prior day's Final and the date it
+ * came from). Inside a baseline's sequence the Initial is the baseline - unless the carry itself
+ * already comes from inside that sequence, in which case normal carry-forward resumes.
+ *
+ * Returns null when there is nothing to derive from at all (a meter's very first reading).
+ */
+export function baselineAwareInitial(
+  baselines: readonly MeterBaseline[],
+  meterKey: string,
+  date: string,
+  carry: { value: number; fromDate: string } | null,
+): { value: number; source: "carry" | "baseline"; baseline?: MeterBaseline } | null {
+  const b = activeBaseline(baselines, meterKey, date);
+  if (b && !(carry && inBaselineSequence(b, carry.fromDate))) {
+    return { value: round2(b.newBaseline), source: "baseline", baseline: b };
+  }
+  return carry ? { value: carry.value, source: "carry" } : null;
 }
 
 /* ---------------- Carry-forward (master §5.3 / §9) ---------------- */

@@ -24,6 +24,18 @@ service cloud.firestore {
     function ownsIndustry(industryId) {
       return hasProfile() && profile().industryId == industryId;
     }
+    // A profile's unit link is what ownsIndustry() trusts, so it must not be freely writable.
+    // It may be set only to a unit whose document was stamped as owned by this user (the
+    // registration flow stamps ownerUid before linking), and once set it never moves. Without
+    // this, an operator could re-point its own profile at another unit and pass ownsIndustry().
+    function unitLinkOk(current) {
+      let next = request.resource.data.get('industryId', null);
+      return next == current
+        || (current == null
+            && next is string
+            && exists(/databases/$(database)/documents/industries/$(next))
+            && get(/databases/$(database)/documents/industries/$(next)).data.get('ownerUid', null) == request.auth.uid);
+    }
 
     // ---- User profiles -------------------------------------------------------
     match /users/{uid} {
@@ -34,12 +46,16 @@ service cloud.firestore {
       // self-assign "monitoring-admin". Regulator accounts are provisioned
       // out-of-band (Firebase console / Admin SDK), never via the app.
       allow create: if signedIn() && request.auth.uid == uid
-                    && request.resource.data.role == 'etp';
+                    && request.resource.data.role == 'etp'
+                    && unitLinkOk(null);
 
       // On update any field may change EXCEPT role, which is immutable from the
-      // client — this closes the privilege-escalation path.
+      // client — this closes the privilege-escalation path. The unit link is
+      // write-once and ownership-checked (see unitLinkOk), closing the
+      // cross-tenant path where a profile was re-pointed at another unit.
       allow update: if signedIn() && request.auth.uid == uid
-                    && request.resource.data.role == resource.data.role;
+                    && request.resource.data.role == resource.data.role
+                    && unitLinkOk(resource.data.get('industryId', null));
 
       // No client deletes.
     }
@@ -53,10 +69,11 @@ service cloud.firestore {
     match /industries/{industryId} {
       allow read: if isAdmin() || ownsIndustry(industryId);
 
-      // Self-registration: an authenticated operator may create the industry doc
-      // it stamps with its own uid as ownerUid (before the profile link exists).
-      allow create: if isAdmin()
-                    || (signedIn() && request.resource.data.ownerUid == request.auth.uid);
+      // Only the Monitoring Body creates a unit: registration runs in the regulator's session
+      // and stamps the operator's ownerUid itself. Letting any signed-in account create a unit
+      // stamped with its own uid would let it claim a future IND-### id - and, through the
+      // profile link below, the real unit that is later registered under that id.
+      allow create: if isAdmin();
 
       // An operator may update its own unit — matched either by the profile link
       // or by the ownerUid stamped at creation (covers the brief window before
@@ -86,6 +103,94 @@ service cloud.firestore {
     match /industries/{industryId}/docs/{docType}/chunks/{chunkId} {
       allow read: if isAdmin() || ownsIndustry(industryId);
       allow write: if isAdmin() || ownsIndustry(industryId);
+    }
+
+    // ---- Meter issues & baselines -------------------------------------------
+    // An operator reports a faulty meter; the Monitoring Body resolves it by setting that meter's
+    // new baseline. Kept OUT of the tenant's `json` blob on purpose: rules cannot inspect inside
+    // that blob, and the owner may rewrite it freely - so a baseline stored there could be forged.
+    // Here every field is checked server-side, and every identity and time comes from the request.
+    //
+    // The resolved issue IS the baseline record, so resolving and setting the baseline is a
+    // single-document write and the two can never disagree. OPEN -> RESOLVED happens once.
+    function isDateStr(v) {
+      return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+    // A reading under the daily numeric standard: finite (NaN and +/-Infinity fail these
+    // comparisons), non-negative, within the ceiling, and at most 2 decimal places.
+    function isReading(v) {
+      return v is number && v >= 0 && v <= 9999999.99
+        && (v is int || math.abs(v * 100 - math.round(v * 100)) < 0.0001);
+    }
+    // Issue n of a meter lives at `<kind>.<code>.<n>` - mirrors issueDocId() in lib/data/etp-calc.ts.
+    function issueIdOf(d) {
+      return d.meterKey.replace(':', '.') + '.' + string(d.seq);
+    }
+    function priorIssuePath(industryId, d) {
+      return /databases/$(database)/documents/industries/$(industryId)/meterIssues/$(d.meterKey.replace(':', '.') + '.' + string(d.seq - 1));
+    }
+
+    match /industries/{industryId}/meterIssues/{issueId} {
+      allow read: if isAdmin() || ownsIndustry(industryId);
+
+      // Only the unit's own operator may report: as OPEN, as the signed-in account, at the
+      // server's time, never with resolution fields pre-filled, and only as the meter's NEXT
+      // issue once the previous one is resolved - so a meter never has two open issues.
+      allow create: if ownsIndustry(industryId)
+                    && request.resource.data.keys().hasAll(['meterKey', 'seq', 'meterLabel', 'unit', 'reportedReading',
+                                                            'reportedReadingDate', 'description', 'status', 'industryId',
+                                                            'reporterUid', 'reporterEmail', 'createdAt'])
+                    && request.resource.data.keys().hasOnly(['meterKey', 'seq', 'meterLabel', 'unit', 'reportedReading',
+                                                             'reportedReadingDate', 'description', 'status', 'industryId',
+                                                             'reporterUid', 'reporterEmail', 'createdAt', 'alertId'])
+                    && request.resource.data.status == 'OPEN'
+                    && request.resource.data.industryId == industryId
+                    && request.resource.data.reporterUid == request.auth.uid
+                    && request.resource.data.reporterEmail == request.auth.token.email
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.meterKey is string
+                    && request.resource.data.meterKey.matches('^((water|energy):[A-Z0-9_]{1,40}|custom:CC-[A-Za-z0-9_-]{1,40})$')
+                    && request.resource.data.meterLabel is string
+                    && request.resource.data.meterLabel.size() <= 120
+                    && request.resource.data.unit is string
+                    && request.resource.data.unit.size() <= 12
+                    && request.resource.data.description is string
+                    && request.resource.data.description.size() > 0
+                    && request.resource.data.description.size() <= 1000
+                    && (request.resource.data.reportedReading == null || request.resource.data.reportedReading is number)
+                    && (request.resource.data.reportedReadingDate == null || isDateStr(request.resource.data.reportedReadingDate))
+                    && (!('alertId' in request.resource.data)
+                        || (request.resource.data.alertId is string && request.resource.data.alertId.size() <= 64))
+                    && request.resource.data.seq is int
+                    && request.resource.data.seq >= 1
+                    && request.resource.data.seq <= 9999
+                    && issueId == issueIdOf(request.resource.data)
+                    && (request.resource.data.seq == 1
+                        || (exists(priorIssuePath(industryId, request.resource.data))
+                            && get(priorIssuePath(industryId, request.resource.data)).data.status == 'RESOLVED'));
+
+      // Only the Monitoring Body resolves, only from OPEN (so never twice), touching only the
+      // resolution fields and supplying all of them. The baseline is a valid reading; a reset is
+      // exactly zero; the effective time is the server's, never a device clock.
+      allow update: if isAdmin()
+                    && resource.data.status == 'OPEN'
+                    && request.resource.data.status == 'RESOLVED'
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['status', 'resolution', 'newBaseline', 'previousReading', 'afterDate',
+                                   'resolvedAt', 'resolvedByUid', 'resolvedByEmail'])
+                    && request.resource.data.keys().hasAll(['resolution', 'newBaseline', 'previousReading', 'afterDate',
+                                                            'resolvedAt', 'resolvedByUid', 'resolvedByEmail'])
+                    && request.resource.data.resolution in ['RESET', 'RESUME']
+                    && isReading(request.resource.data.newBaseline)
+                    && (request.resource.data.resolution == 'RESUME' || request.resource.data.newBaseline == 0)
+                    && (request.resource.data.previousReading == null || request.resource.data.previousReading is number)
+                    && (request.resource.data.afterDate == '' || isDateStr(request.resource.data.afterDate))
+                    && request.resource.data.resolvedAt == request.time
+                    && request.resource.data.resolvedByUid == request.auth.uid
+                    && request.resource.data.resolvedByEmail == request.auth.token.email;
+
+      // History is never deleted.
+      allow delete: if false;
     }
 
     // ---- Trusted-time ping ---------------------------------------------------

@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { firestoreStorage, type StoreData } from "@/lib/data/firestore-storage";
+import { firestoreStorage, remoteApply, type IndustrySlice, type StoreData } from "@/lib/data/firestore-storage";
 import { DEFAULT_CUSTOM_COLUMN_UNIT } from "@/lib/types";
 import type {
   Industry,
@@ -10,7 +10,6 @@ import type {
   AlertType,
   AlertSeverity,
   ComplianceRecord,
-  ApprovalStage,
   MeterPoint,
   CetpId,
   EtpEntry,
@@ -29,6 +28,7 @@ import {
 } from "@/lib/data/seed";
 import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
 import { toMeterReading, groupGrandTotals, toLedger, round2, validateEntryDate, localDateString } from "@/lib/data/etp-calc";
+import { decidedApproval } from "@/lib/data/approval-decisions";
 
 export interface ReadingInput {
   industryId: string;
@@ -131,7 +131,8 @@ interface DataState {
   submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry | null; alerts: AlertType[]; error?: string };
   raiseEtpInletAlert: (industryId: string, etpInlet: number) => void;
   raiseTamperAlert: (industryId: string, clientISO: string, serverISO: string, driftMinutes: number) => void;
-  reportIssue: (industryId: string, category: string, message: string) => void;
+  /** Returns the created alert's id. `id` lets a caller pre-assign it (a meter issue records it). */
+  reportIssue: (industryId: string, category: string, message: string, opts?: { id?: string }) => string;
   sendDisciplinaryAlert: (industryId: string, message: string, severity: AlertSeverity) => void;
   decideApproval: (id: string, decision: "approved" | "rejected", reviewer: string) => void;
   registerIndustry: (input: RegisterInput) => Industry;
@@ -141,6 +142,11 @@ interface DataState {
   acknowledgeAlert: (id: string) => void;
   resolveAlert: (id: string) => void;
   resetData: () => void;
+  /**
+   * Install a unit's slice that a Firestore TRANSACTION just committed. Applied without
+   * re-persisting (the server already holds it), replacing only that unit's records.
+   */
+  applyCommittedSlice: (industryId: string, slice: IndustrySlice) => void;
 }
 
 const seed = (): StoreData => {
@@ -372,6 +378,9 @@ export const useDataStore = create<DataState>()(
           ...(keptCustomMeters ? { customMeters: keptCustomMeters } : {}),
           entryStatus: input.status,
           overrideReason: input.overrideReason,
+          // The entry is rebuilt from scratch here, so the amendment history must be carried over
+          // explicitly - otherwise any later Save Draft or Submit would silently erase it.
+          ...(prior?.ledgerEdits?.length ? { ledgerEdits: prior.ledgerEdits } : {}),
         };
 
         // Alerts + the Monitoring-Body approval are created only on SUBMIT (never on drafts).
@@ -504,11 +513,11 @@ export const useDataStore = create<DataState>()(
       // ETP → Monitoring Body: an operator reports an issue from the Help Center.
       // The alert is written into the operator's OWN slice; the admin (who reads
       // every slice) sees it in the Alert Center.
-      reportIssue: (industryId, category, message) => {
+      reportIssue: (industryId, category, message, opts) => {
         const ind = get().industries.find((i) => i.id === industryId);
         const createdAt = nowISO();
         const alert: Alert = {
-          id: `AL-${Date.now().toString(36)}-HELP`,
+          id: opts?.id ?? `AL-${Date.now().toString(36)}-HELP`,
           type: "help-request",
           severity: ALERT_META["help-request"].severity,
           industryId,
@@ -524,6 +533,7 @@ export const useDataStore = create<DataState>()(
           alerts: [alert, ...s.alerts],
           industries: s.industries.map((i) => (i.id === industryId ? { ...i, alertsCount: i.alertsCount + 1 } : i)),
         }));
+        return alert.id;
       },
 
       // Monitoring Body → an ETP: a disciplinary / advisory notice. Written into the
@@ -555,7 +565,6 @@ export const useDataStore = create<DataState>()(
         const reviewedAt = nowISO();
         set((s) => {
           const approval = s.approvals.find((a) => a.id === id);
-          const stage: ApprovalStage = decision;
           const extraAlerts: Alert[] =
             decision === "rejected" && approval
               ? [
@@ -576,27 +585,8 @@ export const useDataStore = create<DataState>()(
               : [];
 
           return {
-            approvals: s.approvals.map((a) =>
-              a.id === id
-                ? {
-                    ...a,
-                    stage,
-                    reviewedAt,
-                    reviewer,
-                    timeline: [
-                      { ...a.timeline[0], done: true },
-                      { stage: "verification", label: "Under Verification", at: reviewedAt, by: reviewer, done: true },
-                      {
-                        stage,
-                        label: decision === "approved" ? "Approved" : "Rejected",
-                        at: reviewedAt,
-                        by: reviewer,
-                        done: true,
-                      },
-                    ],
-                  }
-                : a,
-            ),
+            // Shared with Approve All so the two can never drift (lib/data/approval-decisions.ts).
+            approvals: s.approvals.map((a) => (a.id === id ? decidedApproval(a, decision, reviewer, reviewedAt) : a)),
             readings: s.readings.map((r) =>
               approval && r.id === approval.readingId ? { ...r, status: decision } : r,
             ),
@@ -742,6 +732,47 @@ export const useDataStore = create<DataState>()(
         set((s) => ({ alerts: s.alerts.map((a) => (a.id === id ? { ...a, status: "resolved" } : a)) })),
 
       resetData: () => set({ ...seed() }),
+
+      applyCommittedSlice: (industryId, slice) => {
+        // remoteApply suppresses the persist write: the transaction already put exactly this on
+        // the server, and writing it again from here would be a blind overwrite of a newer copy.
+        remoteApply.active = true;
+        try {
+          set((s) => {
+            /**
+             * Replace this unit's rows WHERE THEY ARE. Appending them instead would reorder lists
+             * that are shown in array order (the admin's recent alerts, for one). Rows the commit
+             * no longer has are dropped; rows it added go at the end.
+             */
+            const splice = <T extends { id: string; industryId: string | null }>(xs: T[], next: T[]): T[] => {
+              const byId = new Map(next.map((x) => [x.id, x]));
+              const used = new Set<string>();
+              const out: T[] = [];
+              for (const x of xs) {
+                if (x.industryId !== industryId) out.push(x);
+                else if (byId.has(x.id)) {
+                  out.push(byId.get(x.id)!);
+                  used.add(x.id);
+                }
+              }
+              for (const x of next) if (!used.has(x.id)) out.push(x);
+              return out;
+            };
+            return {
+              industries: slice.industry ? s.industries.map((i) => (i.id === industryId ? slice.industry! : i)) : s.industries,
+              readings: splice(s.readings, slice.readings),
+              etpEntries: splice(s.etpEntries, slice.etpEntries),
+              approvals: splice(s.approvals, slice.approvals),
+              alerts: splice(s.alerts, slice.alerts),
+              compliance: slice.compliance
+                ? s.compliance.map((c) => (c.industryId === industryId ? slice.compliance! : c))
+                : s.compliance,
+            };
+          });
+        } finally {
+          remoteApply.active = false;
+        }
+      },
     }),
     {
       name: "jalrakshak-data",

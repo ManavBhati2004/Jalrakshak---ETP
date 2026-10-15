@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { Calculator, Check, Send, Droplets, Zap, Trash2, CalendarDays, TriangleAlert, Ban, Save, FileWarning, Plus, Trash2 as TrashIcon, Lock as LockIcon } from "lucide-react";
@@ -13,7 +13,10 @@ import { getServerTime } from "@/lib/data/server-time";
 import {
   MIN_ENTRY_DATE,
   validateEntryDate,
-  carriedCustomFinal,
+  carriedCustomSource,
+  baselineAwareInitial,
+  baselinesFrom,
+  meterKeyOf,
   customColumnUnit,
   meterRowStatus,
   groupGrandTotals,
@@ -27,7 +30,12 @@ import {
   previousCalendarDay,
   round2,
 } from "@/lib/data/etp-calc";
-import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus, type HwLedger, type MeterReading } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus, type HwLedger, type MeterIssue, type MeterReading } from "@/lib/types";
+import { useMeterIssues } from "@/lib/hooks/use-meter-issues";
+import { saveLedgers } from "@/lib/data/tenant-ops";
+import type { LedgerExpectation } from "@/lib/data/ledger-amend";
+import type { MeterBaseline } from "@/lib/data/etp-calc";
+import { ReportMeterIssue } from "@/components/dashboard/meter-issues-panel";
 import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT } from "@/lib/constants";
 import { formatNumber, formatDate } from "@/lib/utils";
 
@@ -142,6 +150,23 @@ export default function EtpEntryPage() {
   );
   const entrySubmitted = existingEntry?.entryStatus === "SUBMITTED";
 
+  // Meter issues for this unit. A RESOLVED issue is a Monitoring-Body baseline that starts a new
+  // reading sequence for one meter, so it feeds the Initial readings below.
+  const issueFeed = useMeterIssues(industryId ? [industryId] : []);
+  const meterIssues = (industryId && issueFeed.byUnit[industryId]) || NO_ISSUES;
+  // Readings must not be saved before the baselines are known: an Initial carried from the old
+  // meter would be filed where the Monitoring Body's baseline belongs. If the issues cannot be read
+  // at all there can be no baselines to honour, so the entry is not held up.
+  const issuesLoaded = issueFeed.loaded;
+  // Content-stable: a snapshot that changes nothing about baselines (e.g. a NEW open issue) keeps
+  // the same reference, so nothing downstream recomputes.
+  const baselinesJson = useMemo(() => JSON.stringify(baselinesFrom(meterIssues)), [meterIssues]);
+  const baselines = useMemo(() => JSON.parse(baselinesJson) as MeterBaseline[], [baselinesJson]);
+  const seededMeters = useRef<string | null>(null);
+  const seededLedgers = useRef<string | null>(null);
+  // The day's ledgers as the form was last loaded from - what a Sludge & Salt save expects to find.
+  const ledgerBase = useRef<LedgerExpectation | null>(null);
+
   /**
    * Load the selected day into the form.
    *
@@ -166,10 +191,25 @@ export default function EtpEntryPage() {
           return [m.code, { initial: str(initial), final: str(s?.final) }];
         }),
       );
-    setWater(seed(WATER_METERS, existingEntry?.water, carrySource?.water));
-    setEnergy(seed(ENERGY_METERS, existingEntry?.energy, carrySource?.energy));
-    setWaterRemark(existingEntry?.waterRemark ?? "");
-    setEnergyRemark(existingEntry?.energyRemark ?? "");
+    // Re-seed each part only when what it shows changed. A Sludge & Salt save replaces this day's
+    // entry object but not its readings; reloading the meter tables then would wipe meter edits
+    // the operator has typed and not yet submitted.
+    const meterKey = JSON.stringify([
+      entryDate, existingEntry?.id ?? null, existingEntry?.water ?? null, existingEntry?.energy ?? null,
+      existingEntry?.waterRemark ?? "", existingEntry?.energyRemark ?? "",
+      carrySource?.id ?? null, carrySource?.water ?? null, carrySource?.energy ?? null,
+    ]);
+    if (seededMeters.current !== meterKey) {
+      seededMeters.current = meterKey;
+      setWater(seed(WATER_METERS, existingEntry?.water, carrySource?.water));
+      setEnergy(seed(ENERGY_METERS, existingEntry?.energy, carrySource?.energy));
+      setWaterRemark(existingEntry?.waterRemark ?? "");
+      setEnergyRemark(existingEntry?.energyRemark ?? "");
+    }
+    const ledgerKey = JSON.stringify([entryDate, existingEntry?.sludge ?? null, existingEntry?.salt ?? null, carrySource?.sludge?.closing ?? 0, carrySource?.salt?.closing ?? 0]);
+    if (seededLedgers.current === ledgerKey) return;
+    seededLedgers.current = ledgerKey;
+    ledgerBase.current = existingEntry ? { entryId: existingEntry.id, sludge: existingEntry.sludge ?? null, salt: existingEntry.salt ?? null } : null;
     const ledger = (saved: HwLedger | undefined, openingFallback: number): LedgerState =>
       saved
         ? {
@@ -217,18 +257,51 @@ export default function EtpEntryPage() {
     else setEnergy(upd);
   };
 
-  const waterRows = WATER_METERS.map((m) => ({ ...m, ...meterRowStatus(water[m.code].initial, water[m.code].final) }));
-  const energyRows = ENERGY_METERS.map((m) => ({ ...m, ...meterRowStatus(energy[m.code].initial, energy[m.code].final) }));
+  /**
+   * Monitoring-Body baselines, applied as an OVERLAY on the typed state rather than through the
+   * loader above: a baseline that arrives while the operator is typing switches that meter's
+   * Initial without wiping anything else. Present only on the first day of a new sequence - where
+   * the carry would still come from the old meter - and there it beats even a filed Initial, which
+   * can only be a copy saved before the baseline reached that screen.
+   */
+  const baselineOverlay = useMemo(() => {
+    const out: Record<string, MeterBaseline> = {};
+    if (!industryId || !entryDate || baselines.length === 0) return out;
+    const consider = (key: string, carry: { value: number; fromDate: string } | null) => {
+      const r = baselineAwareInitial(baselines, key, entryDate, carry);
+      if (r?.source === "baseline" && r.baseline) out[key] = r.baseline;
+    };
+    const carryOf = (saved?: Record<string, MeterReading>) => (code: string) =>
+      saved && carrySource ? { value: saved[code]?.final ?? 0, fromDate: carrySource.date } : null;
+    for (const m of WATER_METERS) consider(meterKeyOf("water", m.code), carryOf(carrySource?.water)(m.code));
+    for (const m of ENERGY_METERS) consider(meterKeyOf("energy", m.code), carryOf(carrySource?.energy)(m.code));
+    for (const c of customColumns) consider(meterKeyOf("custom", c.id), carriedCustomSource(etpEntries, industryId, entryDate, c.id));
+    return out;
+  }, [baselines, industryId, entryDate, carrySource, customColumns, etpEntries]);
+  const baselineFor = (kind: "water" | "energy" | "custom", code: string): MeterBaseline | undefined => baselineOverlay[meterKeyOf(kind, code)];
+  const withBaselines = (kind: "water" | "energy", state: Record<string, MeterState>) =>
+    Object.fromEntries(
+      Object.entries(state).map(([code, st]) => {
+        const b = baselineOverlay[meterKeyOf(kind, code)];
+        return [code, b ? { ...st, initial: numFilter(String(round2(b.newBaseline))) } : st];
+      }),
+    );
+  // Everything below reads these views - rows, totals, every gate, the saved input and the tables.
+  const waterView = withBaselines("water", water);
+  const energyView = withBaselines("energy", energy);
+
+  const waterRows = WATER_METERS.map((m) => ({ ...m, ...meterRowStatus(waterView[m.code].initial, waterView[m.code].final) }));
+  const energyRows = ENERGY_METERS.map((m) => ({ ...m, ...meterRowStatus(energyView[m.code].initial, energyView[m.code].final) }));
   const allRows = [...waterRows, ...energyRows];
 
   // Per-group water grand totals (Excel: RO excludes the common permeate meter).
-  const waterReadings = Object.fromEntries(waterRows.map((r) => [r.code, { initial: num(water[r.code].initial), final: num(water[r.code].final), total: r.total }]));
+  const waterReadings = Object.fromEntries(waterRows.map((r) => [r.code, { initial: num(waterView[r.code].initial), final: num(waterView[r.code].final), total: r.total }]));
   const groupTotals = groupGrandTotals(waterReadings);
 
   const anyBelowInitial = allRows.some((r) => r.belowInitial);
   const anyIncomplete = allRows.some((r) => r.incomplete);
   const finalsMissing =
-    waterRows.some((r) => water[r.code].final.trim() === "") || energyRows.some((r) => energy[r.code].final.trim() === "");
+    waterRows.some((r) => waterView[r.code].final.trim() === "") || energyRows.some((r) => energyView[r.code].final.trim() === "");
 
   const sludgeClosing = closingBalance(sludge.opening, num(sludge.generation), num(sludge.dispatch));
   const saltClosing = closingBalance(salt.opening, num(salt.generation), num(salt.dispatch));
@@ -246,8 +319,8 @@ export default function EtpEntryPage() {
   // validator, applied to entered/prefilled values so garbage can never be persisted.
   const rangeError = (s: string) => s.trim() !== "" && !!parseDailyValue(s).error;
   const anyOutOfRange =
-    waterRows.some((r) => rangeError(water[r.code].initial) || rangeError(water[r.code].final)) ||
-    energyRows.some((r) => rangeError(energy[r.code].initial) || rangeError(energy[r.code].final)) ||
+    waterRows.some((r) => rangeError(waterView[r.code].initial) || rangeError(waterView[r.code].final)) ||
+    energyRows.some((r) => rangeError(energyView[r.code].initial) || rangeError(energyView[r.code].final)) ||
     rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
 
   /**
@@ -257,10 +330,39 @@ export default function EtpEntryPage() {
    */
   const customCarried = useMemo(() => {
     if (!industryId || !entryDate) return {} as Record<string, number | null>;
-    return Object.fromEntries(customColumns.map((c) => [c.id, carriedCustomFinal(etpEntries, industryId, entryDate, c.id)]));
-  }, [customColumns, etpEntries, industryId, entryDate]);
+    return Object.fromEntries(
+      customColumns.map((c) => [
+        c.id,
+        baselineAwareInitial(baselines, meterKeyOf("custom", c.id), entryDate, carriedCustomSource(etpEntries, industryId, entryDate, c.id))?.value ?? null,
+      ]),
+    );
+  }, [customColumns, etpEntries, industryId, entryDate, baselines]);
 
   const lockCustomInitial = (id: string) => customCarried[id] != null;
+
+  const baselineHint = (b?: MeterBaseline) =>
+    b ? `New baseline ${formatNumber(b.newBaseline)} set by the Monitoring Body on ${formatDate(b.effectiveDate)} (meter ${b.newBaseline === 0 ? "reset" : "resumed"}).` : undefined;
+
+  /** Every meter this unit actually has, by stable key - the choices for a meter issue. */
+  const reportableMeters = useMemo(
+    () => [
+      ...WATER_METERS.map((m) => ({ key: meterKeyOf("water", m.code), label: m.label, unit: "M3", group: "Water" })),
+      ...ENERGY_METERS.map((m) => ({ key: meterKeyOf("energy", m.code), label: m.label, unit: "Kwh", group: "Energy" })),
+      ...customColumns.map((c) => ({ key: meterKeyOf("custom", c.id), label: c.name, unit: customColumnUnit(c), group: "Custom" })),
+    ],
+    [customColumns],
+  );
+
+  /** Baselines in force for the selected day, shown plainly so a jump to 0 never looks like an error. */
+  const baselineNotices = useMemo(() => {
+    if (!entryDate) return [];
+    return reportableMeters.flatMap((m) => {
+      const [kind, code] = [m.key.slice(0, m.key.indexOf(":")), m.key.slice(m.key.indexOf(":") + 1)] as ["water" | "energy" | "custom", string];
+      const b = baselineFor(kind, code);
+      return b ? [{ label: m.label, unit: m.unit, baseline: b }] : [];
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportableMeters, baselineOverlay, entryDate]);
 
   /**
    * The full field set, derived rather than held in an effect. Built from `customColumns` every
@@ -373,9 +475,9 @@ export default function EtpEntryPage() {
     industryId: industryId as string,
     date: entryDate,
     status,
-    water: Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: num(water[m.code].initial), final: num(water[m.code].final) }])),
+    water: Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: num(waterView[m.code].initial), final: num(waterView[m.code].final) }])),
     waterRemark,
-    energy: Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: num(energy[m.code].initial), final: num(energy[m.code].final) }])),
+    energy: Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: num(energyView[m.code].initial), final: num(energyView[m.code].final) }])),
     energyRemark,
     sludge: { opening: sludge.opening, generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
     salt: { opening: salt.opening, generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
@@ -392,8 +494,47 @@ export default function EtpEntryPage() {
     overrideReason: missingPriorDay && override ? overrideReason.trim() : undefined,
   });
 
+  // ---- Sludge & Salt: editable and savable at any time on a filed day ----
+  const [savingLedgers, setSavingLedgers] = useState(false);
+  // A ref, not state: a second click can arrive before the re-render that disables the button.
+  const ledgerSaveInFlight = useRef(false);
+  const lastLedgerEdit = existingEntry?.ledgerEdits?.filter((x) => x.kind === "edit").at(-1);
+  // The existing ledger validation, applied to this section alone.
+  const ledgerBlocked =
+    sludgeNeedsManifest || saltNeedsManifest || sludgeOverStock || saltOverStock || closingNegative ||
+    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
+
+  const onSaveLedgers = async () => {
+    const expected = ledgerBase.current;
+    if (!industryId || !uid || !entryDate || !existingEntry || !expected || ledgerBlocked || ledgerSaveInFlight.current) return;
+    ledgerSaveInFlight.current = true;
+    setSavingLedgers(true);
+    const pick = (l: LedgerState) => ({
+      generation: num(l.generation),
+      dispatch: num(l.dispatch),
+      dateOfDisposal: l.dateOfDisposal,
+      manifestNo: l.manifestNo,
+      remark: l.remark,
+    });
+    const res = await saveLedgers(industryId, entryDate, { sludge: pick(sludge), salt: pick(salt) }, expected, uid);
+    ledgerSaveInFlight.current = false;
+    setSavingLedgers(false);
+    if (!res.ok) {
+      toast.error("Sludge & Salt not saved", { description: res.error });
+      return;
+    }
+    if (!res.changed) {
+      toast.info("Nothing to save", { description: "These Sludge & Salt values are already saved." });
+      return;
+    }
+    const later = res.editedDates.length - 1;
+    toast.success("Sludge & Salt saved", {
+      description: later > 0 ? `Balances recalculated on ${later} later day${later === 1 ? "" : "s"}.` : "This day's other readings are unchanged.",
+    });
+  };
+
   const onSaveDraft = () => {
-    if (!industryId) return;
+    if (!industryId || !issuesLoaded) return;
     if (entrySubmitted) {
       toast.error("That day is already submitted", { description: "Use Submit to file a correction instead of saving a draft." });
       return;
@@ -412,7 +553,7 @@ export default function EtpEntryPage() {
   };
 
   const onSubmit = () => {
-    if (!industryId || submitBlocked) return;
+    if (!industryId || submitBlocked || !issuesLoaded) return;
     const { entry, alerts, error } = submitEtpEntry(buildInput("SUBMITTED"));
     if (error || !entry) {
       toast.error(error ?? "Could not submit the entry");
@@ -516,7 +657,13 @@ export default function EtpEntryPage() {
 
       {/* WATER — 3 Excel groups */}
       <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">
-        <SectionTitle icon={<Droplets className="h-4 w-4" />}>Daily Water Entry (M3)</SectionTitle>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionTitle icon={<Droplets className="h-4 w-4" />}>Daily Water Entry (M3)</SectionTitle>
+          {industryId ? (
+            <ReportMeterIssue industryId={industryId} issues={meterIssues} meters={reportableMeters} loaded={issuesLoaded} unavailable={issueFeed.error} />
+          ) : null}
+        </div>
+        <BaselineNotice notices={baselineNotices} />
         <div className="mt-4 space-y-6">
           {WATER_GROUPS.map((g) => (
             <MeterTable
@@ -524,10 +671,11 @@ export default function EtpEntryPage() {
               caption={g.label}
               unit={g.unit}
               meters={WATER_METERS.filter((m) => m.group === g.id)}
-              state={water}
+              state={waterView}
               rows={waterRows}
               onChange={setMeter("water")}
-              readonlyInitial={lockWaterInitials}
+              readonlyInitial={(code) => lockWaterInitials || !!baselineFor("water", code)}
+              initialHintOf={(code) => baselineHint(baselineFor("water", code))}
               grandTotal={groupTotals[g.id]}
             />
           ))}
@@ -543,10 +691,11 @@ export default function EtpEntryPage() {
             caption="Energy panels"
             unit="Kwh"
             meters={ENERGY_METERS.map((m) => ({ code: m.code, label: m.label }))}
-            state={energy}
+            state={energyView}
             rows={energyRows}
             onChange={setMeter("energy")}
-            readonlyInitial={lockEnergyInitials}
+            readonlyInitial={(code) => lockEnergyInitials || !!baselineFor("energy", code)}
+            initialHintOf={(code) => baselineHint(baselineFor("energy", code))}
           />
         </div>
         <RemarkField value={energyRemark} onChange={setEnergyRemark} />
@@ -569,6 +718,27 @@ export default function EtpEntryPage() {
               {warnLevel === "exceeded" && " Over the authorised quantity — review before dispatching more."}
               {warnLevel === "approaching" && ` Approaching the ${AUTHORISED_QUANTITY_WARNING_PERCENT}% threshold.`}
             </p>
+          </div>
+        ) : null}
+
+        {/* Sludge & Salt can be corrected at any time on a day already filed - in any status - without
+            re-submitting the whole sheet. Only these inputs are saved; status is not changed and the
+            edit is recorded, so a past approval is never presented as approving the new figures. */}
+        {existingEntry ? (
+          <div className="mt-4 flex flex-col gap-2 border-t border-border/60 pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-muted-foreground">
+              {lastLedgerEdit
+                ? `Last amended ${formatDate(lastLedgerEdit.at, true)}. Saving recalculates the balances of every later day.`
+                : "Saved on its own; the rest of this day's sheet is left exactly as filed."}
+            </p>
+            <Button
+              variant="outline"
+              onClick={onSaveLedgers}
+              disabled={savingLedgers || ledgerBlocked}
+              className="h-10 shrink-0 gap-1.5 rounded-xl"
+            >
+              <Save className="h-4 w-4" /> {savingLedgers ? "Saving…" : "Save Sludge & Salt"}
+            </Button>
           </div>
         ) : null}
       </div>
@@ -643,6 +813,7 @@ export default function EtpEntryPage() {
               rows={customRows}
               onChange={setCustomMeter}
               readonlyInitial={lockCustomInitial}
+              initialHintOf={(code) => baselineHint(baselineFor("custom", code))}
               unitOf={(code) => customColumnUnit(customColumns.find((c) => c.id === code) ?? {})}
               onRemove={onRemoveColumn}
             />
@@ -696,11 +867,11 @@ export default function EtpEntryPage() {
         </label>
 
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-          <Button variant="outline" onClick={onSaveDraft} disabled={!entryDate || entrySubmitted || structuralBlocked} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
+          <Button variant="outline" onClick={onSaveDraft} disabled={!entryDate || entrySubmitted || structuralBlocked || !issuesLoaded} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
             <Save className="h-4 w-4" /> {entrySubmitted ? "Already submitted" : "Save Draft"}
           </Button>
-          <Button onClick={onSubmit} disabled={submitBlocked || !entryDate} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
-            <Send className="h-4 w-4" /> {submitBlocked ? "Fix the highlighted fields" : "Submit Daily Entry"}
+          <Button onClick={onSubmit} disabled={submitBlocked || !entryDate || !issuesLoaded} className="h-11 flex-1 gap-2 rounded-xl text-base font-semibold">
+            <Send className="h-4 w-4" /> {!issuesLoaded ? "Loading meter baselines…" : submitBlocked ? "Fix the highlighted fields" : "Submit Daily Entry"}
           </Button>
         </div>
 
@@ -725,6 +896,9 @@ export default function EtpEntryPage() {
   );
 }
 
+/** A stable empty list, so "no issues yet" never changes identity between renders. */
+const NO_ISSUES: MeterIssue[] = [];
+
 /** Shown on every locked Initial field so the derivation is never a mystery. */
 const LOCKED_INITIAL_HINT = "Automatically populated from the previous final reading.";
 
@@ -741,6 +915,7 @@ function MeterTable({
   labelHeader = "Meter",
   unitOf,
   onRemove,
+  initialHintOf,
 }: {
   caption: string;
   unit: string;
@@ -757,6 +932,8 @@ function MeterTable({
   unitOf?: (code: string) => string;
   /** When given, each row gets a Remove control. */
   onRemove?: (code: string, label: string) => void;
+  /** Explains a locked Initial that did NOT come from the previous day (e.g. a meter reset). */
+  initialHintOf?: (code: string) => string | undefined;
 }) {
   const rowByCode = Object.fromEntries(rows.map((r) => [r.code, r]));
   const lockOf = (code: string) => (typeof readonlyInitial === "function" ? readonlyInitial(code) : readonlyInitial);
@@ -816,7 +993,7 @@ function MeterTable({
                         readOnly={locked}
                         aria-readonly={locked}
                         tabIndex={locked ? -1 : undefined}
-                        title={locked ? LOCKED_INITIAL_HINT : undefined}
+                        title={locked ? (initialHintOf?.(m.code) ?? LOCKED_INITIAL_HINT) : undefined}
                         className={`${cellCls}${locked ? " cursor-not-allowed bg-muted/50 pr-7 text-muted-foreground" : ""}`}
                         placeholder="0"
                       />
@@ -939,6 +1116,30 @@ const cellCls =
 const inputCls =
   "h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:bg-background";
 const readonlyCls = "flex h-10 items-center rounded-xl border border-border bg-muted/40 px-3 text-sm font-medium text-foreground";
+
+/**
+ * Baselines in force for this day. A meter reset to 0 makes the Initial drop sharply; stating it
+ * here means that never reads as a data error, and says who set it and when.
+ */
+function BaselineNotice({ notices }: { notices: { label: string; unit: string; baseline: MeterBaseline }[] }) {
+  if (notices.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-700">
+      <p className="font-semibold">New meter baseline in force</p>
+      <ul className="mt-1 space-y-0.5">
+        {notices.map((n) => (
+          <li key={n.baseline.meterKey}>
+            {n.label}: Initial set to <span className="font-mono font-semibold">{formatNumber(n.baseline.newBaseline)} {n.unit}</span> by the Monitoring
+            Body on {formatDate(n.baseline.effectiveDate)} ({n.baseline.newBaseline === 0 ? "meter reset" : "meter resumed"}). Usage counts from here.
+            {n.baseline.previousReading != null && n.baseline.afterDate
+              ? ` The old meter's last reading was ${formatNumber(n.baseline.previousReading)} ${n.unit} on ${formatDate(n.baseline.afterDate)}; any use between that reading and this baseline was not measured.`
+              : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function RemarkField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (

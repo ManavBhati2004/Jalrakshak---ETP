@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { DataTable } from "@/components/dashboard/data-table";
 import { DocumentsPanel } from "@/components/dashboard/documents-panel";
+import { MeterIssuesAdmin } from "@/components/dashboard/meter-issues-panel";
 import { customColumnUnit, entryCustomTotal, entryMeterTotal } from "@/lib/data/etp-calc";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,9 @@ export default function IndividualEtpPage() {
         title="Individual ETP Units"
         description="Industries operating their own Effluent Treatment Plants. Select a unit to view its capacities, treatment pipeline, reading history and report."
       />
+
+      {/* Faulty / replaced meters reported by units — resolved here by setting a new baseline. */}
+      {etps.length ? <MeterIssuesAdmin units={etps.map((i) => ({ id: i.id, name: i.name }))} /> : null}
 
       {etps.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
@@ -171,7 +175,27 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
           return v == null ? <span className="text-sm text-muted-foreground">—</span> : <NumCell v={v} unit={customColumnUnit(c)} />;
         },
       })),
-    { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => {
+        // Status is not changed by a Sludge & Salt amendment, so flag it here instead.
+        const edits = (row.original.ledgerEdits ?? []).filter((x) => x.kind === "edit");
+        return (
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <StatusBadge status={row.original.status} />
+            {edits.length ? (
+              <span
+                title={`Sludge & Salt amended ${edits.length > 1 ? `${edits.length} times, last ` : ""}on ${formatDate(edits[edits.length - 1].at, true)}`}
+                className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700"
+              >
+                Amended
+              </span>
+            ) : null}
+          </span>
+        );
+      },
+    },
   ];
 
   const handleDownload = () => {

@@ -24,11 +24,23 @@ import {
   entryCustomTotal,
   entryCustomReading,
   carriedCustomFinal,
+  carriedCustomSource,
+  baselineAwareInitial,
+  activeBaseline,
+  inBaselineSequence,
+  latestMeterReading,
+  meterKeyOf,
+  type MeterBaseline,
+  issueDocId,
+  lastIssueSeq,
+  openIssueFor,
+  istDateString,
+  baselinesFrom,
   customColumnUnit,
   meterRowStatus,
   toMeterReading,
 } from "./etp-calc";
-import type { EtpEntry } from "@/lib/types";
+import type { EtpEntry, MeterIssue } from "@/lib/types";
 import { DAILY_MAX_VALUE } from "@/lib/constants";
 
 /* ---------------- Numeric validation (master §19.1) ---------------- */
@@ -576,5 +588,198 @@ describe("two-decimal standard flows through the meter and ledger maths", () => 
     expect(DAILY_MAX_VALUE).toBe(9999999.99);
     expect(parseDailyValue("9999999.99").error).toBeUndefined();
     expect(parseDailyValue("10000000").error).toBeDefined();
+  });
+});
+
+/* ============================================================================
+   Meter reset / resume baselines. A reset starts a NEW reading sequence: old readings
+   stay as filed, the first new reading takes its Initial from the baseline, and usage is
+   never computed across the reset.
+   ========================================================================== */
+describe("meter baselines — reset and resume", () => {
+  const W = "water:RAW_FRESH_WATER";
+  const e = (date: string, final: number, over: Partial<EtpEntry> = {}): EtpEntry => ({
+    id: `E-${date}`, industryId: "IND-1", industryName: "X", date,
+    freshWaterConsumption: 0, etpInlet: 0, etpOutlet: 0, etpReuse: 0, roInlet: 0, roReject: 0, roPermeate: 0,
+    sludgeToTSDF: 0, totalWaterIntake: 0, unit: "KL", status: "approved", submittedAt: `${date}T09:00:00.000Z`,
+    entryStatus: "SUBMITTED",
+    water: { RAW_FRESH_WATER: { initial: final - 10, final, total: 10 } },
+    ...over,
+  });
+  const base = (newBaseline: number, afterDate: string, effectiveDate: string, order = 1): MeterBaseline =>
+    ({ meterKey: W, newBaseline, previousReading: null, afterDate, effectiveDate, order });
+
+  it("spec example 1: 15480, reset to 0, next reading 120 -> usage 120 (not -15360)", () => {
+    const b = base(0, "2026-10-14", "2026-10-15");
+    const init = baselineAwareInitial([b], W, "2026-10-15", { value: 15480, fromDate: "2026-10-14" });
+    expect(init).toMatchObject({ value: 0, source: "baseline" });
+    expect(meterTotal(init!.value, 120)).toBe(120);
+  });
+
+  it("spec example 2: 15480, resume at 500, next reading 620 -> usage 120", () => {
+    const b = base(500, "2026-10-14", "2026-10-15");
+    const init = baselineAwareInitial([b], W, "2026-10-15", { value: 15480, fromDate: "2026-10-14" });
+    expect(init!.value).toBe(500);
+    expect(meterTotal(init!.value, 620)).toBe(120); // the resume value itself is not consumption
+  });
+
+  it("a resume value BELOW the old reading is a valid baseline, not a monotonic violation", () => {
+    const init = baselineAwareInitial([base(500, "2026-10-14", "2026-10-15")], W, "2026-10-15", { value: 15480, fromDate: "2026-10-14" });
+    expect(meterRowStatus(String(init!.value), "620")).toMatchObject({ belowInitial: false, total: 120 });
+  });
+
+  it("monotonic validation still applies WITHIN the new sequence", () => {
+    const init = baselineAwareInitial([base(500, "2026-10-14", "2026-10-15")], W, "2026-10-15", null);
+    expect(meterRowStatus(String(init!.value), "400")).toMatchObject({ belowInitial: true });
+  });
+
+  it("after the first new reading, ordinary carry-forward resumes inside the new sequence", () => {
+    const b = base(0, "2026-10-14", "2026-10-15");
+    // 10-15 was filed on the new meter at 120; 10-16 carries 120, not the baseline.
+    expect(baselineAwareInitial([b], W, "2026-10-16", { value: 120, fromDate: "2026-10-15" })).toMatchObject({ value: 120, source: "carry" });
+  });
+
+  it("same-day transition, reset day ALREADY filed: that day stays old; the next day starts new", () => {
+    const b = base(0, "2026-10-15", "2026-10-15"); // an entry already existed for the 15th
+    expect(inBaselineSequence(b, "2026-10-15")).toBe(false);
+    expect(baselineAwareInitial([b], W, "2026-10-16", { value: 15480, fromDate: "2026-10-15" })).toMatchObject({ value: 0, source: "baseline" });
+  });
+
+  it("same-day transition, reset day NOT yet filed: the reset day itself starts new", () => {
+    const b = base(0, "2026-10-14", "2026-10-15");
+    expect(inBaselineSequence(b, "2026-10-15")).toBe(true);
+  });
+
+  it("a pending DRAFT on the reset day is an old observation and is not moved", () => {
+    // latestMeterReading counts drafts, so the reset's afterDate lands on the draft's day.
+    const entries = [e("2026-10-14", 15400), e("2026-10-15", 15480, { entryStatus: "DRAFT", status: "pending" })];
+    const latest = latestMeterReading(entries, "IND-1", W);
+    expect(latest).toEqual({ value: 15480, date: "2026-10-15" });
+    const b = base(0, latest!.date, "2026-10-15");
+    expect(inBaselineSequence(b, "2026-10-15")).toBe(false);
+  });
+
+  it("backfilling a missed day from BEFORE the reset still belongs to the old meter", () => {
+    const b = base(0, "2026-10-10", "2026-10-15"); // last reading the 10th, reset on the 15th
+    expect(baselineAwareInitial([b], W, "2026-10-12", { value: 15400, fromDate: "2026-10-10" })).toMatchObject({ value: 15400, source: "carry" });
+  });
+
+  it("a meter reset twice uses the latest baseline that applies", () => {
+    const first = base(0, "2026-10-05", "2026-10-06", 1);
+    const second = base(300, "2026-10-12", "2026-10-13", 2);
+    expect(baselineAwareInitial([first, second], W, "2026-10-13", { value: 900, fromDate: "2026-10-12" })).toMatchObject({ value: 300 });
+    expect(baselineAwareInitial([first, second], W, "2026-10-07", { value: 50, fromDate: "2026-10-06" })).toMatchObject({ value: 50, source: "carry" });
+  });
+
+  it("only the targeted meter changes", () => {
+    const b = base(0, "2026-10-14", "2026-10-15");
+    expect(baselineAwareInitial([b], "water:ETP_INLET_ALL_STREAMS", "2026-10-15", { value: 9000, fromDate: "2026-10-14" })).toMatchObject({ value: 9000, source: "carry" });
+    expect(baselineAwareInitial([b], "energy:ETP_POWER", "2026-10-15", { value: 70, fromDate: "2026-10-14" })).toMatchObject({ value: 70, source: "carry" });
+  });
+
+  it("works for a custom-column meter", () => {
+    const k = meterKeyOf("custom", "CC-ABC");
+    const b: MeterBaseline = { meterKey: k, newBaseline: 0, previousReading: 412.5, afterDate: "2026-10-14", effectiveDate: "2026-10-15", order: 1 };
+    const entries = [e("2026-10-14", 1, { customMeters: { "CC-ABC": { initial: 400, final: 412.5, total: 12.5 } } })];
+    expect(latestMeterReading(entries, "IND-1", k)).toEqual({ value: 412.5, date: "2026-10-14" });
+    expect(baselineAwareInitial([b], k, "2026-10-15", carriedCustomSource(entries, "IND-1", "2026-10-15", "CC-ABC"))).toMatchObject({ value: 0, source: "baseline" });
+  });
+
+  it("a meter with no prior reading at all still takes the baseline", () => {
+    expect(baselineAwareInitial([base(250, "", "2026-10-15")], W, "2026-10-15", null)).toMatchObject({ value: 250 });
+  });
+
+  it("no baseline and no carry is the first-ever reading: null, left for the operator", () => {
+    expect(baselineAwareInitial([], W, "2026-10-15", null)).toBeNull();
+  });
+
+  it("latestMeterReading ignores other units and finds the newest date, not the newest in array order", () => {
+    const entries = [e("2026-10-14", 300), e("2026-10-09", 100), e("2026-10-16", 999, { industryId: "IND-2" })];
+    expect(latestMeterReading(entries, "IND-1", W)).toEqual({ value: 300, date: "2026-10-14" });
+  });
+
+  it("carriedCustomFinal is unchanged by the refactor", () => {
+    const entries = [e("2026-10-14", 1, { customMeters: { "CC-ABC": { initial: 0, final: 7.5, total: 7.5 } } })];
+    expect(carriedCustomFinal(entries, "IND-1", "2026-10-15", "CC-ABC")).toBe(7.5);
+  });
+
+  it("two resets: 15 Oct 0 -> 120, 16 Oct 120 -> 250, resume 500 on the 17th", () => {
+    const first = base(0, "2026-10-14", "2026-10-15", 1);
+    const second = base(500, "2026-10-16", "2026-10-17", 2);
+    // the 16th reopened still belongs to the FIRST new sequence and carries the 15th's Final
+    expect(baselineAwareInitial([first, second], W, "2026-10-16", { value: 120, fromDate: "2026-10-15" })).toMatchObject({ value: 120, source: "carry" });
+    const init17 = baselineAwareInitial([first, second], W, "2026-10-17", { value: 250, fromDate: "2026-10-16" });
+    expect(init17).toMatchObject({ value: 500, source: "baseline" });
+    expect(meterTotal(init17!.value, 620)).toBe(120);
+    expect(baselineAwareInitial([first, second], W, "2026-10-18", { value: 620, fromDate: "2026-10-17" })).toMatchObject({ value: 620, source: "carry" });
+  });
+
+  it("two resolutions with identical dates: the higher issue number wins", () => {
+    const reset = base(0, "2026-10-14", "2026-10-15", 1);
+    const resume = base(500, "2026-10-14", "2026-10-15", 2);
+    expect(baselineAwareInitial([resume, reset], W, "2026-10-15", { value: 15480, fromDate: "2026-10-14" })).toMatchObject({ value: 500 });
+  });
+
+  it("a pending entry from before the transition is untouched by it", () => {
+    const b = base(0, "2026-10-14", "2026-10-15");
+    // the 14th is pending review: it is history of the OLD meter and its day is outside the sequence
+    expect(inBaselineSequence(b, "2026-10-14")).toBe(false);
+    expect(activeBaseline([b], W, "2026-10-14")).toBeUndefined();
+  });
+});
+
+describe("meter issue ids and baselines from stored issues", () => {
+  const issue = (over: Partial<MeterIssue> = {}): MeterIssue => ({
+    id: "water.RAW_FRESH_WATER.1", industryId: "IND-1", meterKey: "water:RAW_FRESH_WATER", seq: 1,
+    meterLabel: "Raw", unit: "M3", reportedReading: 15480, reportedReadingDate: "2026-10-14",
+    description: "Dial stuck", status: "RESOLVED", reporterUid: "op", reporterEmail: "op@x.in",
+    createdAt: "2026-10-15T04:00:00.000Z", resolution: "RESET", newBaseline: 0, previousReading: 15480,
+    afterDate: "2026-10-14", resolvedAt: "2026-10-15T06:00:00.000Z", resolvedByUid: "mb", resolvedByEmail: "mb@x.in",
+    ...over,
+  });
+
+  it("issueDocId has no ':' and ends in the issue number", () => {
+    expect(issueDocId("water:RAW_FRESH_WATER", 3)).toBe("water.RAW_FRESH_WATER.3");
+    expect(issueDocId("custom:CC-MGX1A2", 1)).toBe("custom.CC-MGX1A2.1");
+  });
+
+  it("lastIssueSeq / openIssueFor look at one meter only", () => {
+    const list = [issue({ seq: 1 }), issue({ seq: 2, status: "OPEN" }), issue({ meterKey: "energy:ETP_POWER", seq: 7, status: "OPEN" })];
+    expect(lastIssueSeq(list, "water:RAW_FRESH_WATER")).toBe(2);
+    expect(lastIssueSeq(list, "water:MEE_FEED")).toBe(0);
+    expect(openIssueFor(list, "water:RAW_FRESH_WATER")?.seq).toBe(2);
+    expect(openIssueFor(list, "water:MEE_FEED")).toBeUndefined();
+  });
+
+  it("istDateString uses the plant's zone (IST), not the viewer's", () => {
+    expect(istDateString("2026-10-15T18:29:00.000Z")).toBe("2026-10-15"); // 23:59 IST
+    expect(istDateString("2026-10-15T18:30:00.000Z")).toBe("2026-10-16"); // 00:00 IST next day
+    expect(istDateString("not a date")).toBe("");
+  });
+
+  it("baselinesFrom derives the effective date from the server resolution time", () => {
+    expect(baselinesFrom([issue()])).toEqual([
+      { meterKey: "water:RAW_FRESH_WATER", newBaseline: 0, previousReading: 15480, afterDate: "2026-10-14", effectiveDate: "2026-10-15", order: 1 },
+    ]);
+  });
+
+  it("baselinesFrom keeps a meter that had no reading at all (afterDate '')", () => {
+    expect(baselinesFrom([issue({ afterDate: "", previousReading: null })])[0]).toMatchObject({ afterDate: "", previousReading: null });
+  });
+
+  it("baselinesFrom DROPS malformed or unresolved issues instead of defaulting them", () => {
+    const bad: MeterIssue[] = [
+      issue({ status: "OPEN" }),
+      issue({ afterDate: undefined }),
+      issue({ afterDate: "15/10/2026" }),
+      issue({ resolvedAt: undefined }),
+      issue({ resolvedAt: "garbage" }),
+      issue({ newBaseline: undefined }),
+      issue({ newBaseline: -1 }),
+      issue({ newBaseline: Number.NaN }),
+      issue({ seq: 0 }),
+      issue({ seq: 1.5 }),
+    ];
+    expect(baselinesFrom(bad)).toEqual([]);
   });
 });

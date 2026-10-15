@@ -136,7 +136,7 @@ export function RegistrationForm() {
       name: v.ownerName,
       email: v.email,
       password: v.password,
-      createIndustry: (ownerUid) => {
+      createIndustry: async (ownerUid) => {
         const created = registerIndustry({
           name: v.name,
           ownerName: v.ownerName,
@@ -175,8 +175,9 @@ export function RegistrationForm() {
           signatoryDesignation: v.signatoryDesignation,
           registrationComplete: true,
         });
-        // Stamp ownerUid so the operator owns the doc (belt-and-suspenders alongside the profile link).
-        void writeOwnedIndustry(useDataStore.getState(), created.id, ownerUid);
+        // Stamp ownerUid so the operator owns the doc. AWAITED: the rules only let the new profile
+        // link to an industry whose ownerUid is that user, so the link must not race this write.
+        await writeOwnedIndustry(useDataStore.getState(), created.id, ownerUid);
         return created;
       },
     });

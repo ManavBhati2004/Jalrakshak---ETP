@@ -69,6 +69,60 @@ export const ETP_DOCUMENT_TYPES: readonly { code: EtpDocumentType; label: string
 ] as const;
 
 /**
+ * The meter an issue is about, as a STABLE key: `water:CODE`, `energy:CODE` or `custom:CC-...` -
+ * never a display label or a position in a form, both of which can change.
+ */
+export type MeterKey = string;
+
+export type MeterIssueStatus = "OPEN" | "RESOLVED";
+export type MeterIssueResolution = "RESET" | "RESUME";
+
+/**
+ * A meter problem reported by an operator, stored at `industries/{id}/meterIssues/{issueId}` -
+ * OUTSIDE the tenant's json blob, so firestore.rules can enforce who may write which field.
+ *
+ * A RESOLVED issue is also the meter's baseline record: from the transition onward the meter's
+ * Initial reading is `newBaseline` instead of the previous day's Final. Resolving and setting the
+ * baseline are therefore one document write and cannot disagree.
+ */
+export interface MeterIssue {
+  /** `<kind>.<code>.<seq>` - see `issueDocId`. */
+  id: string;
+  industryId: string;
+  meterKey: MeterKey;
+  /**
+   * 1, 2, 3… per meter. Issue n can be raised only once issue n−1 is resolved (the rules enforce
+   * it), so a meter never has two open issues - nor two competing baselines.
+   */
+  seq: number;
+  meterLabel: string;
+  unit: string;
+  /** The meter's latest saved reading when the issue was raised, or null if it had none. */
+  reportedReading: number | null;
+  reportedReadingDate: string | null;
+  description: string;
+  status: MeterIssueStatus;
+  /** Who reported it - checked against the signed-in account by the rules, never trusted. */
+  reporterUid: string;
+  reporterEmail: string;
+  /** ISO, from the server's clock (the rules require it). */
+  createdAt: string;
+  /** The help-request alert raised alongside, so it can be closed when the issue is. */
+  alertId?: string;
+  // ---- resolution (Monitoring Body only; enforced by the rules) ----
+  resolution?: MeterIssueResolution;
+  newBaseline?: number;
+  /** The meter's latest reading at the moment of resolution - the end of the old sequence. */
+  previousReading?: number | null;
+  /** Latest date holding a reading for this meter at resolution ("" if none); the old sequence ends here. */
+  afterDate?: string;
+  /** ISO, from the server's clock: when the new baseline took effect. */
+  resolvedAt?: string;
+  resolvedByUid?: string;
+  resolvedByEmail?: string;
+}
+
+/**
  * Metadata for one uploaded PDF. The bytes themselves live in a `chunks` subcollection
  * beneath this document — deliberately NOT inside the tenant's `json` blob, which is
  * rewritten in full on every store mutation and live-streamed to the regulator.
@@ -239,6 +293,45 @@ export interface EtpEntry {
   customMeters?: Record<string, MeterReading>;
   entryStatus?: EntryStatus; // DRAFT | SUBMITTED (append-only submit workflow)
   overrideReason?: string; // audit note when a missing-prior-day continuity override was authorised
+  /**
+   * Sludge & Salt amendments made after this entry was filed. Append-only. The entry's status is
+   * deliberately NOT changed by an amendment, so a prior approval keeps its earlier timestamp and is
+   * never presented as approving the amended figures - compare `at` against the approval's
+   * `reviewedAt` to see which came first.
+   */
+  ledgerEdits?: LedgerEdit[];
+}
+
+/** One field that an amendment changed. `from`/`to` are the stored values (kg numbers or text). */
+export interface LedgerFieldChange {
+  ledger: "sludge" | "salt";
+  field: "generation" | "dispatch" | "dateOfDisposal" | "manifestNo" | "remark" | "opening" | "closing";
+  from: number | string;
+  to: number | string;
+}
+
+/**
+ * An audit record of a Sludge & Salt amendment. `kind` distinguishes a direct edit of this day from a
+ * balance that merely moved because an EARLIER day was edited (its own inputs are unchanged).
+ */
+export interface LedgerEdit {
+  at: string; // ISO
+  byUid: string;
+  kind: "edit" | "carried";
+  /** For "carried": the date whose edit moved this day's opening/closing. */
+  sourceDate?: string;
+  /**
+   * The field-level changes of an "edit". A "carried" record has none: its opening and closing moved
+   * by exactly the change recorded on `sourceDate`, so repeating the figures would only add bulk.
+   */
+  changes?: LedgerFieldChange[];
+  /**
+   * The approval this day was under when the record was made, and its stage then - read from the
+   * server copy inside the saving transaction. This, not a device clock, is what tells an amendment
+   * made AFTER a decision from one the decision already covered.
+   */
+  approvalId?: string;
+  approvalStage?: ApprovalStage;
 }
 
 export type ReadingShift = "morning" | "evening";

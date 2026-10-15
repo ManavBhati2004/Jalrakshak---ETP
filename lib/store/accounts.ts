@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { initializeApp, deleteApp } from "firebase/app";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updatePassword, getAuth } from "firebase/auth";
 import { doc, getDoc, setDoc, getFirestore } from "firebase/firestore";
-import { auth, db, firebaseConfig } from "@/lib/firebase";
+import { auth, db, firebaseConfig, connectEmulatorsIfEnabled } from "@/lib/firebase";
 import type { RoleId } from "@/lib/types";
 
 /**
@@ -104,6 +104,9 @@ async function withSecondaryApp<T>(fn: (secAuth: ReturnType<typeof getAuth>, sec
   const secApp = initializeApp(firebaseConfig, name);
   const secAuth = getAuth(secApp);
   const secDb = getFirestore(secApp);
+  // Must follow the primary app onto the emulators in local testing, or a registration under
+  // test would create a real production account.
+  connectEmulatorsIfEnabled(secAuth, secDb);
   try {
     return await fn(secAuth, secDb);
   } finally {
@@ -116,8 +119,12 @@ export interface RegisterUnitInput {
   name: string;
   email: string;
   password: string;
-  /** Runs in the ADMIN's primary session: create the industry owned by `ownerUid` and return it. */
-  createIndustry: (ownerUid: string) => { id: string; name: string };
+  /**
+   * Runs in the ADMIN's primary session: create the industry owned by `ownerUid` and return it.
+   * Must resolve only once the owned industry document is actually written: the profile link
+   * below is checked by the rules against that document's `ownerUid`.
+   */
+  createIndustry: (ownerUid: string) => Promise<{ id: string; name: string }>;
 }
 
 /**
@@ -139,7 +146,9 @@ export async function registerUnitWithLogin(
       // Only the user themselves may create their profile (rules force role === "etp").
       await setDoc(doc(secDb, "users", uid), { name: input.name.trim(), email, role: "etp", industryId: null });
       // The admin (primary session) creates the industry doc, stamped with this operator's ownerUid.
-      const created = input.createIndustry(uid);
+      // Awaited: the rules only let a profile point at an industry whose ownerUid is this user,
+      // so the link must not be sent before that document exists.
+      const created = await input.createIndustry(uid);
       // Link the profile → industry (as the new user).
       await setDoc(doc(secDb, "users", uid), { industryId: created.id }, { merge: true });
       return { ok: true as const, created };
