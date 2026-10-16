@@ -139,16 +139,6 @@ export default function LoginPage() {
               {!entering && <ArrowRight className="h-4 w-4" />}
             </Button>
           </form>
-
-          <div className="mt-4 space-y-1.5 rounded-xl border border-slate-200 bg-white/70 px-3 py-2 text-xs text-slate-500">
-            <p className="font-semibold text-slate-700">Sign-in accounts</p>
-            <p>
-              <span className="font-semibold text-slate-600">Monitoring Body</span> — <span className="text-slate-400">Email:</span> admin@rspcb.in · <span className="text-slate-400">Password:</span> rspcb123
-            </p>
-            <p>
-              <span className="font-semibold text-slate-600">ETP Unit</span> — <span className="text-slate-400">Email:</span> etp@demo.in · <span className="text-slate-400">Password:</span> demo123
-            </p>
-          </div>
         </div>
       </div>
     </div>
