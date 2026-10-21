@@ -29,6 +29,7 @@ import {
   LifeBuoy,
   Megaphone,
   Send,
+  BookOpenCheck,
   Circle,
   type LucideIcon,
 } from "lucide-react";
@@ -62,6 +63,7 @@ const REGISTRY: Record<string, LucideIcon> = {
   LifeBuoy,
   Megaphone,
   Send,
+  BookOpenCheck,
 };
 
 export function Icon({

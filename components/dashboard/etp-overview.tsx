@@ -151,7 +151,27 @@ export function EtpOverview() {
           return v == null ? <span className="text-sm text-muted-foreground">—</span> : <Num v={v} unit={customColumnUnit(c)} />;
         },
       })),
-    { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
+    {
+      accessorKey: "status",
+      header: "Status",
+      cell: ({ row }) => {
+        // A Monitoring-Body correction keeps the status, so say it here: the figures shown are the corrected ones.
+        const last = row.original.corrections?.filter((c) => !c.carried).at(-1);
+        return (
+          <span className="inline-flex flex-wrap items-center gap-1.5">
+            <StatusBadge status={row.original.status} />
+            {last ? (
+              <span
+                title={`Corrected by the Monitoring Body on ${formatDate(last.at, true)}`}
+                className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700"
+              >
+                Corrected
+              </span>
+            ) : null}
+          </span>
+        );
+      },
+    },
   ];
 
   const handleDownload = () => {

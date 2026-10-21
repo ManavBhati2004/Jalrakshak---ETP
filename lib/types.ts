@@ -120,6 +120,8 @@ export interface MeterIssue {
   resolvedAt?: string;
   resolvedByUid?: string;
   resolvedByEmail?: string;
+  /** Set when the Monitoring Body reset the meter directly, without an operator's report. */
+  raisedBy?: "monitoring-body";
 }
 
 /**
@@ -233,6 +235,12 @@ export interface HwLedger {
   manifestNo: string;
   closing: number; // = opening + generation − dispatch (auto)
   remark: string;
+  /**
+   * True when the opening was set by hand (an actual stock count) rather than carried from the
+   * previous closing. Such an opening is an anchor: a later correction of an earlier day does not
+   * move it, while every other opening shifts with the previous closing.
+   */
+  openingManual?: boolean;
 }
 
 /** DRAFT = partial save; SUBMITTED = sent to the Monitoring-Body approval workflow. */
@@ -300,9 +308,41 @@ export interface EtpEntry {
    * `reviewedAt` to see which came first.
    */
   ledgerEdits?: LedgerEdit[];
+  /**
+   * Corrections the Monitoring Body made to this filed day in the Logbook sheet, oldest first.
+   * The day's status is not changed by a correction; this record is what shows who changed which
+   * reading, when, and from what. Bounded (see MAX_CORRECTION_RECORDS).
+   */
+  corrections?: EntryCorrection[];
 }
 
 /** One field that an amendment changed. `from`/`to` are the stored values (kg numbers or text). */
+/**
+ * One stored value the Monitoring Body changed. `field` names it - e.g. "water.RAW_FRESH_WATER.final",
+ * "energy.ETP_POWER.initial", "custom.CC-ABC.final", "sludge.opening". `null` means no reading.
+ */
+export interface CorrectionChange {
+  field: string;
+  from: number | string | null;
+  to: number | string | null;
+}
+
+/** A Monitoring-Body correction of one filed day. */
+export interface EntryCorrection {
+  at: string; // ISO
+  byUid: string;
+  byEmail?: string;
+  /**
+   * True when this day changed only because a corrected reading carried into it (the next day's
+   * Initial follows a corrected Final; later Sludge & Salt openings follow a corrected closing).
+   */
+  carried?: boolean;
+  changes: CorrectionChange[];
+  /** The approval the day was under, and its stage, when the correction was made. */
+  approvalId?: string;
+  approvalStage?: ApprovalStage;
+}
+
 export interface LedgerFieldChange {
   ledger: "sludge" | "salt";
   field: "generation" | "dispatch" | "dateOfDisposal" | "manifestNo" | "remark" | "opening" | "closing";

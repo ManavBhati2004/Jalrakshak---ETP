@@ -6,10 +6,11 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useDataStore } from "@/lib/store/data";
-import { activeBaseline, baselinesFrom, istDateString, latestMeterReading, openIssueFor, parseDailyValue } from "@/lib/data/etp-calc";
-import { MAX_ISSUE_DESCRIPTION, reportMeterIssue, resolveMeterIssue } from "@/lib/data/meter-issues";
+import { activeBaseline, baselinesFrom, customColumnUnit, istDateString, latestMeterReading, meterKeyOf, openIssueFor, parseDailyValue } from "@/lib/data/etp-calc";
+import { MAX_ISSUE_DESCRIPTION, MAX_RESET_REASON, reportMeterIssue, resetMeterDirectly, resolveMeterIssue } from "@/lib/data/meter-issues";
+import { ENERGY_METERS, WATER_METERS } from "@/lib/constants";
 import { useMeterIssues } from "@/lib/hooks/use-meter-issues";
-import type { EtpEntry, MeterIssue, MeterIssueResolution } from "@/lib/types";
+import type { EtpEntry, Industry, MeterIssue, MeterIssueResolution } from "@/lib/types";
 import { formatDate, formatNumber } from "@/lib/utils";
 
 const inputCls =
@@ -182,7 +183,7 @@ export function ReportMeterIssue({
                     <p className="font-medium text-foreground">{i.meterLabel}</p>
                     <p className="break-words text-muted-foreground">{i.description}</p>
                     <p className="text-[10px] text-muted-foreground">
-                      Reported {formatDate(i.createdAt, true)}
+                      {i.raisedBy === "monitoring-body" ? "Raised by the Monitoring Body" : "Reported"} {formatDate(i.createdAt, true)}
                       {i.status === "RESOLVED" ? ` · ${resolutionText(i, "body")}` : ""}
                     </p>
                   </div>
@@ -231,6 +232,7 @@ export function MeterIssuesAdmin({ units }: { units: { id: string; name: string 
   const [pending, setPending] = useState<Pending | null>(null);
   const [resumeValue, setResumeValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [directOpen, setDirectOpen] = useState(false);
 
   const nameOf = (id: string) => units.find((u) => u.id === id)?.name ?? id;
   const all = useMemo(() => Object.values(byUnit).flat().sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)), [byUnit]);
@@ -297,8 +299,12 @@ export function MeterIssuesAdmin({ units }: { units: { id: string; name: string 
           <Button variant="outline" size="sm" onClick={() => setShowResolved((v) => !v)} className="h-8 rounded-lg">
             {showResolved ? "Open only" : "Show resolved"}
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setDirectOpen(true)} disabled={!loaded} className="h-8 gap-1.5 rounded-lg">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset a meter
+          </Button>
         </div>
       </div>
+      {directOpen ? <DirectResetDialog units={units} byUnit={byUnit} onClose={() => setDirectOpen(false)} /> : null}
 
       {error ? (
         <p className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-sm text-amber-700">
@@ -323,7 +329,8 @@ export function MeterIssuesAdmin({ units }: { units: { id: string; name: string 
                   Reported reading{" "}
                   <span className="font-mono text-foreground">{i.reportedReading == null ? "—" : `${formatNumber(i.reportedReading)} ${i.unit}`}</span>
                   {" · "}Current reading <span className="font-mono text-foreground">{readingText(current(i), i.industryId, i.unit)}</span>
-                  {" · "}Reported {formatDate(i.createdAt, true)} by {i.reporterEmail}
+                  {" · "}
+                  {i.raisedBy === "monitoring-body" ? "Reset directly" : "Reported"} {formatDate(i.createdAt, true)} by {i.reporterEmail}
                 </p>
                 {i.status === "RESOLVED" ? <p className="mt-1 text-xs font-medium text-emerald-600">{resolutionText(i, "officer")}</p> : null}
               </div>
@@ -422,5 +429,219 @@ export function MeterIssuesAdmin({ units }: { units: { id: string; name: string 
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/* ============================================================
+   Monitoring Body: reset a meter directly, without a report
+   ============================================================ */
+
+/** Every meter a unit has, by stable key: 12 water, 3 energy, then its custom columns. */
+function metersOf(industry: Industry | undefined): ReportableMeter[] {
+  if (!industry) return [];
+  return [
+    ...WATER_METERS.map((m) => ({ key: meterKeyOf("water", m.code), label: m.label, unit: "M3", group: "Water" })),
+    ...ENERGY_METERS.map((m) => ({ key: meterKeyOf("energy", m.code), label: m.label, unit: "Kwh", group: "Energy" })),
+    ...[...(industry.customColumns ?? [])]
+      .sort((a, b) => a.order - b.order)
+      .map((c) => ({ key: meterKeyOf("custom", c.id), label: c.name, unit: customColumnUnit(c), group: "Custom" })),
+  ];
+}
+
+/**
+ * The Monitoring Body starts a meter's new reading sequence on its own - e.g. a replaced meter seen
+ * on inspection - with the same two choices and the same confirmation as resolving a report. The
+ * old meter's last reading is kept; the record says the Monitoring Body raised it.
+ */
+function DirectResetDialog({
+  units,
+  byUnit,
+  onClose,
+}: {
+  units: { id: string; name: string }[];
+  byUnit: Record<string, MeterIssue[]>;
+  onClose: () => void;
+}) {
+  const industries = useDataStore((s) => s.industries);
+  const etpEntries = useDataStore((s) => s.etpEntries);
+  const [unitId, setUnitId] = useState(units[0]?.id ?? "");
+  const [meterKey, setMeterKey] = useState("");
+  const [resolution, setResolution] = useState<MeterIssueResolution>("RESET");
+  const [value, setValue] = useState("");
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [staleNote, setStaleNote] = useState<string | null>(null);
+  // The reading the officer is confirming against: taken when the meter is chosen, so a reading filed
+  // while the dialog is open is caught as stale rather than silently baselined over.
+  const [confirmed, setConfirmed] = useState<Reading>(null);
+  const [today] = useState(() => istDateString(Date.now()));
+
+  const industry = industries.find((i) => i.id === unitId);
+  const meters = useMemo(() => metersOf(industry), [industry]);
+  const groups = useMemo(() => {
+    const out: Record<string, ReportableMeter[]> = {};
+    for (const m of meters) (out[m.group] ??= []).push(m);
+    return out;
+  }, [meters]);
+  const meter = meters.find((m) => m.key === meterKey);
+  const issues = byUnit[unitId] ?? [];
+  const openOne = meterKey ? openIssueFor(issues, meterKey) : undefined;
+  const baselineNow = meterKey ? activeBaseline(baselinesFrom(issues), meterKey, "9999-12-31") : undefined;
+
+  const pickMeter = (key: string) => {
+    setMeterKey(key);
+    setStaleNote(null);
+    setConfirmed(key ? latestMeterReading(etpEntries, unitId, key) : null);
+  };
+  const pickUnit = (id: string) => {
+    setUnitId(id);
+    pickMeter("");
+  };
+
+  const parsed = parseDailyValue(value);
+  const newBaseline = resolution === "RESET" ? 0 : parsed.value;
+  const valueInvalid = resolution === "RESUME" && (value.trim() === "" || !!parsed.error || parsed.value == null);
+  const canSubmit = !!meter && !openOne && !valueInvalid && newBaseline != null && reason.trim().length > 0 && !busy;
+
+  const submit = async () => {
+    if (!meter || !canSubmit || newBaseline == null) return;
+    setBusy(true);
+    const res = await resetMeterDirectly({
+      industryId: unitId,
+      meterKey: meter.key,
+      meterLabel: meter.label,
+      unit: meter.unit,
+      reason,
+      resolution,
+      newBaseline,
+      confirmed,
+      known: issues,
+    });
+    setBusy(false);
+    if (!res.ok) {
+      if (res.stale) {
+        setConfirmed(res.stale.current);
+        setStaleNote(res.error);
+        return;
+      }
+      toast.error("Meter not reset", { description: res.error });
+      return;
+    }
+    toast.success(resolution === "RESET" ? "Meter reset to 0" : `Meter resumed at ${formatNumber(newBaseline)}`, {
+      description: `${units.find((u) => u.id === unitId)?.name ?? unitId} · ${meter.label}`,
+    });
+    onClose();
+  };
+
+  const reading = confirmed ? `${formatNumber(confirmed.value)} ${meter?.unit ?? ""} (${formatDate(confirmed.date)})` : "none on record";
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Reset a meter</DialogTitle>
+          <DialogDescription>
+            Start a meter&apos;s new reading sequence without waiting for the unit to report it — e.g. after a replacement. Readings already filed stay
+            exactly as they are.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label htmlFor="direct-unit" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+              ETP unit
+            </label>
+            <select id="direct-unit" value={unitId} onChange={(e) => pickUnit(e.target.value)} className={inputCls}>
+              {units.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.id})
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label htmlFor="direct-meter" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+              Meter
+            </label>
+            <select id="direct-meter" value={meterKey} onChange={(e) => pickMeter(e.target.value)} className={inputCls}>
+              <option value="">Select a meter…</option>
+              {Object.entries(groups).map(([group, ms]) => (
+                <optgroup key={group} label={group}>
+                  {ms.map((m) => (
+                    <option key={m.key} value={m.key}>
+                      {m.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant={resolution === "RESET" ? "default" : "outline"} size="sm" onClick={() => setResolution("RESET")} className="h-9 flex-1 gap-1.5 rounded-lg">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset to 0
+          </Button>
+          <Button type="button" variant={resolution === "RESUME" ? "default" : "outline"} size="sm" onClick={() => setResolution("RESUME")} className="h-9 flex-1 gap-1.5 rounded-lg">
+            <PlayCircle className="h-3.5 w-3.5" /> Resume from a value
+          </Button>
+        </div>
+        {resolution === "RESUME" ? (
+          <div>
+            <label htmlFor="direct-value" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+              Resume value{meter ? ` (${meter.unit})` : ""} — may be lower than the old reading after a repair or replacement
+            </label>
+            <input id="direct-value" inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} placeholder="e.g. 500" className={inputCls} />
+            {value.trim() && parsed.error ? <p className="mt-1 text-xs text-red-500">Enter a non-negative number with at most 2 decimal places.</p> : null}
+          </div>
+        ) : null}
+        <div>
+          <label htmlFor="direct-reason" className="mb-1.5 block text-xs font-medium text-muted-foreground">
+            Reason (recorded with the reset)
+          </label>
+          <textarea
+            id="direct-reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value.slice(0, MAX_RESET_REASON))}
+            rows={2}
+            placeholder="e.g. Faulty meter replaced on inspection; new meter starts at 0."
+            className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
+          />
+        </div>
+        {meter ? (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+            <dt className="text-muted-foreground">Old meter&apos;s last reading</dt>
+            <dd className="font-mono text-foreground">{reading} — kept</dd>
+            {baselineNow ? (
+              <>
+                <dt className="text-muted-foreground">Current baseline</dt>
+                <dd className="font-mono text-foreground">
+                  {formatNumber(baselineNow.newBaseline)} {meter.unit} (set {formatDate(baselineNow.effectiveDate)})
+                </dd>
+              </>
+            ) : null}
+            <dt className="text-muted-foreground">New baseline</dt>
+            <dd className="font-mono font-semibold text-primary">{newBaseline != null && !valueInvalid ? `${formatNumber(newBaseline)} ${meter.unit}` : "—"}</dd>
+            <dt className="text-muted-foreground">Applies to</dt>
+            <dd className="text-foreground">
+              Readings dated {confirmed ? `after ${formatDate(confirmed.date)} and ` : ""}from {formatDate(today)} onward
+            </dd>
+          </dl>
+        ) : null}
+        {openOne ? (
+          <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700">
+            This meter already has an open report from the unit (reported {formatDate(openOne.createdAt, true)}) — resolve it from the list instead.
+          </p>
+        ) : null}
+        {staleNote ? <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700">{staleNote}</p> : null}
+        <DialogFooter>
+          <Button variant="outline" className="rounded-lg" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button className="gap-2 rounded-lg" disabled={!canSubmit} onClick={submit}>
+            {resolution === "RESET" ? <RotateCcw className="h-4 w-4" /> : <PlayCircle className="h-4 w-4" />}
+            {busy ? "Saving…" : staleNote ? "Confirm again" : resolution === "RESET" ? "Reset to 0" : "Resume"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

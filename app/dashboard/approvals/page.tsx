@@ -319,7 +319,12 @@ function AmendedAfter({ approvalId, entry }: { approvalId: string; entry?: EtpEn
   );
   const edits = after.filter((x) => x.kind === "edit");
   const carried = after.filter((x) => x.kind === "carried");
-  if (after.length === 0) return null;
+  // Monitoring-Body Logbook corrections made after the decision (stamped the same way).
+  const corrected = (entry?.corrections ?? []).filter(
+    (c) => c.approvalId === approvalId && (c.approvalStage === "approved" || c.approvalStage === "rejected"),
+  );
+  const correctedDirect = corrected.filter((c) => !c.carried);
+  if (after.length === 0 && corrected.length === 0) return null;
   return (
     <div className="mt-2 space-y-1">
       {edits.length ? (
@@ -333,6 +338,17 @@ function AmendedAfter({ approvalId, entry }: { approvalId: string; entry?: EtpEn
         <p className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-xs font-medium text-amber-700">
           <PencilLine className="h-3.5 w-3.5 shrink-0" />
           Sludge &amp; Salt balances recalculated after this decision (earlier day {formatDate(carried[carried.length - 1].sourceDate ?? null)} amended)
+        </p>
+      ) : null}
+      {correctedDirect.length ? (
+        <p className="flex items-center gap-1.5 rounded-lg bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-700">
+          <PencilLine className="h-3.5 w-3.5 shrink-0" />
+          Readings corrected in the Logbook after this decision · {formatDate(correctedDirect[correctedDirect.length - 1].at, true)}
+        </p>
+      ) : corrected.length ? (
+        <p className="flex items-center gap-1.5 rounded-lg bg-violet-500/10 px-2.5 py-1.5 text-xs font-medium text-violet-700">
+          <PencilLine className="h-3.5 w-3.5 shrink-0" />
+          Figures recalculated after this decision (an earlier day was corrected in the Logbook)
         </p>
       ) : null}
     </div>

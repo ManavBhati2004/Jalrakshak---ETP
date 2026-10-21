@@ -4,7 +4,7 @@
    client Excel; behaviour follows the master prompt (FE/CR/JALRAKSHAK/001 R2).
    ============================================================ */
 
-import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type MeterIssue, type MeterReading, type HwLedger } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type Industry, type MeterIssue, type MeterReading, type HwLedger } from "@/lib/types";
 import {
   WATER_METERS,
   RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON,
@@ -60,6 +60,51 @@ export function groupGrandTotals(water: Record<string, MeterReading>): Record<st
   return totals;
 }
 
+/**
+ * Every figure on an entry that is computed from its water readings: the three group grand totals,
+ * the retained legacy scalars and total intake. One definition, used by the operator's Save/Submit
+ * and by Monitoring-Body corrections, so a corrected entry can never disagree with a freshly filed one.
+ */
+export function deriveWaterFigures(water: Record<string, MeterReading>) {
+  const legacy = (key: string) => {
+    const def = WATER_METERS.find((m) => m.legacyKey === key);
+    return def ? Number(water[def.code]?.total ?? 0) : 0;
+  };
+  const freshWaterConsumption = legacy("freshWaterConsumption");
+  const etpReuse = legacy("etpReuse");
+  const roPermeate = legacy("roPermeate");
+  return {
+    waterTotals: groupGrandTotals(water),
+    freshWaterConsumption,
+    etpInlet: legacy("etpInlet"),
+    etpReuse,
+    roInlet: legacy("roInlet"),
+    roReject: legacy("roReject"),
+    roPermeate,
+    totalWaterIntake: round2(freshWaterConsumption + etpReuse + roPermeate),
+  };
+}
+
+/* ---------------- RO 3rd & 4th stage meters (RSPCB reading instructions) ----------------
+   1. RO 1st & 2nd and 3rd & 4th stages are read separately.
+   2. A plant whose 3rd & 4th stage permeate/reject meters are combined files only the common
+      1st & 2nd stage meters.
+   3. A plant that must run RO up to the 3rd & 4th stage must have separate meters for them.
+   The registered RO Stage III/IV capacity is what says which kind of plant a unit is. */
+
+/** The two meters only a plant with RO Stage III/IV has. */
+export const RO_STAGE_34_CODES: readonly string[] = ["RO_PERMEATE_3_4", "RO_REJECT_3_4"];
+
+/** True when the unit registered RO Stage III or IV capacity, so its separate 3&4 meters are mandatory. */
+export function roStage34Required(industry: Pick<Industry, "roStage3" | "roStage4"> | undefined | null): boolean {
+  return (Number(industry?.roStage3) || 0) > 0 || (Number(industry?.roStage4) || 0) > 0;
+}
+
+/** A meter the unit may leave blank: the 3&4 stage RO meters of a plant without RO Stage III/IV. */
+export function isOptionalWaterMeter(code: string, industry: Pick<Industry, "roStage3" | "roStage4"> | undefined | null): boolean {
+  return RO_STAGE_34_CODES.includes(code) && !roStage34Required(industry);
+}
+
 /** Sum of every water meter total (master §5.5 — NOT a dedup KPI). */
 export function computeGrandTotal(water: Record<string, MeterReading>): number {
   return round2(Object.values(water).reduce((s, m) => s + Number(m?.total ?? 0), 0));
@@ -78,6 +123,7 @@ export function toLedger(input: {
   dispatch: number;
   manifestNo: string;
   remark: string;
+  openingManual?: boolean;
 }): HwLedger {
   return {
     opening: round2(input.opening),
@@ -87,7 +133,40 @@ export function toLedger(input: {
     manifestNo: input.manifestNo,
     closing: closingBalance(input.opening, input.generation, input.dispatch),
     remark: input.remark,
+    ...(input.openingManual ? { openingManual: true } : {}),
   };
+}
+
+/**
+ * A day that counts as filed: anything but a draft or a rejected entry. One definition - the same
+ * test the monthly return and the carry-forward rule use - so the regulator's Logbook, the ledger
+ * chain and the returns all agree on which days exist. Entries filed before drafts existed (no
+ * `entryStatus`) count as filed.
+ */
+export function isFiledEntry(e: Pick<EtpEntry, "entryStatus" | "status">): boolean {
+  return e.entryStatus !== "DRAFT" && e.status !== "rejected";
+}
+
+/**
+ * The Final to carry into a water or energy meter's Initial on `date`: the latest earlier entry (in
+ * any status, like the form's carry source) that recorded THAT meter. Per meter, because a meter can
+ * be left blank on a day - an optional RO 3rd & 4th stage meter, say - and the next reading must
+ * still continue from its last real reading, never from 0. Null when the meter was never read.
+ */
+export function carriedMeterSource(
+  entries: readonly EtpEntry[],
+  industryId: string,
+  date: string,
+  kind: "water" | "energy",
+  code: string,
+): { value: number; fromDate: string } | null {
+  let best: EtpEntry | undefined;
+  for (const e of entries) {
+    if (e.industryId !== industryId || e.date >= date) continue;
+    if (e[kind]?.[code]?.final == null) continue;
+    if (!best || e.date > best.date) best = e;
+  }
+  return best ? { value: round2(Number(best[kind]![code].final)), fromDate: best.date } : null;
 }
 
 /** Dispatch > 0 requires BOTH a (trimmed) Manifest No. and a Date of disposal. */

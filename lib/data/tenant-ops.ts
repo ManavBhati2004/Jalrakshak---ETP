@@ -7,6 +7,7 @@
 import { patchTenantSlice } from "@/lib/data/tenant-tx";
 import { approveCandidatesInSlice, type ApprovalCandidate, type CandidateOutcome } from "@/lib/data/approval-decisions";
 import { amendLedgers, type LedgerExpectation, type LedgerInputs } from "@/lib/data/ledger-amend";
+import { applyCorrections, type LogbookContext, type LogbookEdits } from "@/lib/data/logbook";
 
 export interface BulkApproveReport {
   approved: CandidateOutcome[];
@@ -72,6 +73,40 @@ export async function saveLedgers(
   if (!res.ok) return { ok: false, error: res.error };
   if (failure) return { ok: false, error: failure };
   return { ok: true, ...res.result };
+}
+
+/**
+ * Save the Monitoring Body's Logbook corrections for one unit. The edits are re-applied to the
+ * server's current copy inside a transaction; `expected` holds the revisions of every day the
+ * corrections touch as the sheet showed them, so a day the ETP changed meanwhile refuses the save
+ * instead of being overwritten.
+ */
+export async function saveCorrections(
+  industryId: string,
+  edits: LogbookEdits,
+  ctx: LogbookContext,
+  expected: Readonly<Record<string, string>>,
+  by: { uid: string; email?: string },
+): Promise<{ ok: true; corrected: number } | { ok: false; error: string }> {
+  const at = new Date().toISOString();
+  let failure: string | null = null;
+  const res = await patchTenantSlice(industryId, (slice) => {
+    failure = null; // reset per attempt: Firestore may re-run this on contention
+    const r = applyCorrections({ etpEntries: slice.etpEntries, approvals: slice.approvals }, industryId, edits, ctx, {
+      expected,
+      byUid: by.uid,
+      byEmail: by.email,
+      at,
+    });
+    if (!r.ok) {
+      failure = r.error;
+      return { next: null, result: 0 };
+    }
+    return { next: r.corrected ? { ...slice, etpEntries: r.etpEntries, approvals: r.approvals } : null, result: r.corrected };
+  });
+  if (!res.ok) return { ok: false, error: res.error };
+  if (failure) return { ok: false, error: failure };
+  return { ok: true, corrected: res.result };
 }
 
 /** Close the help-request alert a meter issue raised, once that issue is resolved. */

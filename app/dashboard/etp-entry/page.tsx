@@ -29,19 +29,26 @@ import {
   parseDailyValue,
   previousCalendarDay,
   round2,
+  isOptionalWaterMeter,
+  roStage34Required,
+  carriedMeterSource,
 } from "@/lib/data/etp-calc";
 import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus, type HwLedger, type MeterIssue, type MeterReading } from "@/lib/types";
 import { useMeterIssues } from "@/lib/hooks/use-meter-issues";
 import { saveLedgers } from "@/lib/data/tenant-ops";
-import type { LedgerExpectation } from "@/lib/data/ledger-amend";
+import { MAX_BALANCE, type LedgerExpectation } from "@/lib/data/ledger-amend";
 import type { MeterBaseline } from "@/lib/data/etp-calc";
 import { ReportMeterIssue } from "@/components/dashboard/meter-issues-panel";
-import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT } from "@/lib/constants";
+import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT, RO_READING_INSTRUCTIONS } from "@/lib/constants";
+import { describeCorrectionField } from "@/lib/data/logbook";
 import { formatNumber, formatDate } from "@/lib/utils";
 
 type MeterState = { initial: string; final: string };
 type LedgerState = {
-  opening: number;
+  /** Carried from the previous day's closing; may be overwritten with an actual stock count. */
+  opening: string;
+  /** True once the operator has typed in the opening field since the day was loaded. */
+  openingEdited?: boolean;
   generation: string;
   dateOfDisposal: string;
   dispatch: string;
@@ -53,19 +60,21 @@ const num = (s: string) => {
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 };
-// Numeric standard: ≤7 integer digits + ≤2 decimals, nonnegative.
-const numFilter = (s: string) => {
+// Numeric standard: ≤7 integer digits + ≤2 decimals, nonnegative. A running stock balance is not a
+// daily figure and may have up to 10 integer digits (`balanceFilter`).
+const numFilter = (s: string, intDigits = 7) => {
   let v = s.replace(/[^0-9.]/g, "");
   const dot = v.indexOf(".");
   if (dot !== -1) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, "");
   const [int = "", dec = ""] = v.split(".");
-  const capInt = int.slice(0, 7);
+  const capInt = int.slice(0, intDigits);
   return v.includes(".") ? `${capInt}.${dec.slice(0, 2)}` : capInt;
 };
+const balanceFilter = (s: string) => numFilter(s, 10);
 
 const emptyMeters = (keys: readonly { code: string }[]): Record<string, MeterState> =>
   Object.fromEntries(keys.map((k) => [k.code, { initial: "", final: "" }]));
-const emptyLedger = (): LedgerState => ({ opening: 0, generation: "", dateOfDisposal: "", dispatch: "", manifestNo: "", remark: "" });
+const emptyLedger = (): LedgerState => ({ opening: "", generation: "", dateOfDisposal: "", dispatch: "", manifestNo: "", remark: "" });
 
 export default function EtpEntryPage() {
   const industryId = useAuthStore((s) => s.industryId);
@@ -142,6 +151,18 @@ export default function EtpEntryPage() {
    */
   const lockWaterInitials = !!carrySource?.water;
   const lockEnergyInitials = !!carrySource?.energy;
+  /**
+   * Each water / energy meter's own carry: its last real reading. Per meter, because a meter can be
+   * left blank on a day (an optional RO 3rd & 4th stage meter) and its next Initial must continue from
+   * that last reading - never from 0. A meter never read before has no carry and stays editable.
+   */
+  const meterCarry = useMemo(() => {
+    const out: Record<string, { value: number; fromDate: string } | null> = {};
+    if (!industryId || !entryDate) return out;
+    for (const m of WATER_METERS) out[meterKeyOf("water", m.code)] = carriedMeterSource(etpEntries, industryId, entryDate, "water", m.code);
+    for (const m of ENERGY_METERS) out[meterKeyOf("energy", m.code)] = carriedMeterSource(etpEntries, industryId, entryDate, "energy", m.code);
+    return out;
+  }, [etpEntries, industryId, entryDate]);
 
   /** Whatever is already filed for the selected day, if anything. */
   const existingEntry = useMemo(
@@ -182,12 +203,12 @@ export default function EtpEntryPage() {
   useEffect(() => {
     if (!industryId || !entryDate) return;
     const str = (v: number | undefined | null) => (v == null ? "" : numFilter(String(v)));
-    const seed = (defs: readonly { code: string }[], saved?: Record<string, MeterReading>, carried?: Record<string, MeterReading>) =>
+    const seed = (kind: "water" | "energy", defs: readonly { code: string }[], saved?: Record<string, MeterReading>) =>
       Object.fromEntries(
         defs.map((m) => {
           const s = saved?.[m.code];
           // A filed Initial wins: it is what was actually recorded that day.
-          const initial = s?.initial != null ? s.initial : carried ? (carried[m.code]?.final ?? 0) : null;
+          const initial = s?.initial != null ? s.initial : (meterCarry[meterKeyOf(kind, m.code)]?.value ?? null);
           return [m.code, { initial: str(initial), final: str(s?.final) }];
         }),
       );
@@ -197,12 +218,12 @@ export default function EtpEntryPage() {
     const meterKey = JSON.stringify([
       entryDate, existingEntry?.id ?? null, existingEntry?.water ?? null, existingEntry?.energy ?? null,
       existingEntry?.waterRemark ?? "", existingEntry?.energyRemark ?? "",
-      carrySource?.id ?? null, carrySource?.water ?? null, carrySource?.energy ?? null,
+      carrySource?.id ?? null, meterCarry,
     ]);
     if (seededMeters.current !== meterKey) {
       seededMeters.current = meterKey;
-      setWater(seed(WATER_METERS, existingEntry?.water, carrySource?.water));
-      setEnergy(seed(ENERGY_METERS, existingEntry?.energy, carrySource?.energy));
+      setWater(seed("water", WATER_METERS, existingEntry?.water));
+      setEnergy(seed("energy", ENERGY_METERS, existingEntry?.energy));
       setWaterRemark(existingEntry?.waterRemark ?? "");
       setEnergyRemark(existingEntry?.energyRemark ?? "");
     }
@@ -210,21 +231,23 @@ export default function EtpEntryPage() {
     if (seededLedgers.current === ledgerKey) return;
     seededLedgers.current = ledgerKey;
     ledgerBase.current = existingEntry ? { entryId: existingEntry.id, sludge: existingEntry.sludge ?? null, salt: existingEntry.salt ?? null } : null;
+    // A balance is not filtered to the daily 7 digits: a large running stock must never be cut short.
+    const bal = (v: number | undefined | null) => (v == null ? "" : balanceFilter(String(v)));
     const ledger = (saved: HwLedger | undefined, openingFallback: number): LedgerState =>
       saved
         ? {
-            opening: saved.opening ?? openingFallback,
+            opening: bal(saved.opening ?? openingFallback),
             generation: str(saved.generation),
             dateOfDisposal: saved.dateOfDisposal ?? "",
             dispatch: str(saved.dispatch),
             manifestNo: saved.manifestNo ?? "",
             remark: saved.remark ?? "",
           }
-        : { ...emptyLedger(), opening: openingFallback };
+        : { ...emptyLedger(), opening: bal(openingFallback) };
     setSludge(ledger(existingEntry?.sludge, carrySource?.sludge?.closing ?? 0));
     setSalt(ledger(existingEntry?.salt, carrySource?.salt?.closing ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existingEntry, carrySource, industryId, entryDate]);
+  }, [existingEntry, carrySource, industryId, entryDate, meterCarry]);
 
   /**
    * Switch the sheet to another day. The per-day UI state is reset here rather than in an effect
@@ -271,13 +294,11 @@ export default function EtpEntryPage() {
       const r = baselineAwareInitial(baselines, key, entryDate, carry);
       if (r?.source === "baseline" && r.baseline) out[key] = r.baseline;
     };
-    const carryOf = (saved?: Record<string, MeterReading>) => (code: string) =>
-      saved && carrySource ? { value: saved[code]?.final ?? 0, fromDate: carrySource.date } : null;
-    for (const m of WATER_METERS) consider(meterKeyOf("water", m.code), carryOf(carrySource?.water)(m.code));
-    for (const m of ENERGY_METERS) consider(meterKeyOf("energy", m.code), carryOf(carrySource?.energy)(m.code));
+    for (const m of WATER_METERS) consider(meterKeyOf("water", m.code), meterCarry[meterKeyOf("water", m.code)] ?? null);
+    for (const m of ENERGY_METERS) consider(meterKeyOf("energy", m.code), meterCarry[meterKeyOf("energy", m.code)] ?? null);
     for (const c of customColumns) consider(meterKeyOf("custom", c.id), carriedCustomSource(etpEntries, industryId, entryDate, c.id));
     return out;
-  }, [baselines, industryId, entryDate, carrySource, customColumns, etpEntries]);
+  }, [baselines, industryId, entryDate, meterCarry, customColumns, etpEntries]);
   const baselineFor = (kind: "water" | "energy" | "custom", code: string): MeterBaseline | undefined => baselineOverlay[meterKeyOf(kind, code)];
   const withBaselines = (kind: "water" | "energy", state: Record<string, MeterState>) =>
     Object.fromEntries(
@@ -290,7 +311,14 @@ export default function EtpEntryPage() {
   const waterView = withBaselines("water", water);
   const energyView = withBaselines("energy", energy);
 
-  const waterRows = WATER_METERS.map((m) => ({ ...m, ...meterRowStatus(waterView[m.code].initial, waterView[m.code].final) }));
+  // RSPCB RO instructions: a plant with no RO Stage III/IV capacity files only the common meters, so
+  // its two 3rd & 4th stage meters may be left blank - and then file no reading at all.
+  const optionalWater = (code: string) => isOptionalWaterMeter(code, industry);
+  const blankOptional = (code: string) => optionalWater(code) && waterView[code].final.trim() === "";
+  const waterRows = WATER_METERS.map((m) => {
+    const st = meterRowStatus(waterView[m.code].initial, waterView[m.code].final);
+    return { ...m, ...st, incomplete: st.incomplete && !blankOptional(m.code) };
+  });
   const energyRows = ENERGY_METERS.map((m) => ({ ...m, ...meterRowStatus(energyView[m.code].initial, energyView[m.code].final) }));
   const allRows = [...waterRows, ...energyRows];
 
@@ -301,14 +329,15 @@ export default function EtpEntryPage() {
   const anyBelowInitial = allRows.some((r) => r.belowInitial);
   const anyIncomplete = allRows.some((r) => r.incomplete);
   const finalsMissing =
-    waterRows.some((r) => waterView[r.code].final.trim() === "") || energyRows.some((r) => energyView[r.code].final.trim() === "");
+    waterRows.some((r) => waterView[r.code].final.trim() === "" && !optionalWater(r.code)) ||
+    energyRows.some((r) => energyView[r.code].final.trim() === "");
 
-  const sludgeClosing = closingBalance(sludge.opening, num(sludge.generation), num(sludge.dispatch));
-  const saltClosing = closingBalance(salt.opening, num(salt.generation), num(salt.dispatch));
+  const sludgeClosing = closingBalance(num(sludge.opening), num(sludge.generation), num(sludge.dispatch));
+  const saltClosing = closingBalance(num(salt.opening), num(salt.generation), num(salt.dispatch));
   const sludgeNeedsManifest = needsManifest(num(sludge.dispatch), sludge.manifestNo, sludge.dateOfDisposal);
   const saltNeedsManifest = needsManifest(num(salt.dispatch), salt.manifestNo, salt.dateOfDisposal);
-  const sludgeOverStock = dispatchExceedsStock(sludge.opening, num(sludge.generation), num(sludge.dispatch));
-  const saltOverStock = dispatchExceedsStock(salt.opening, num(salt.generation), num(salt.dispatch));
+  const sludgeOverStock = dispatchExceedsStock(num(sludge.opening), num(sludge.generation), num(sludge.dispatch));
+  const saltOverStock = dispatchExceedsStock(num(salt.opening), num(salt.generation), num(salt.dispatch));
   const closingNegative = sludgeClosing < 0 || saltClosing < 0;
 
   // Continuity: a missing immediately-previous day blocks submit unless overridden with a reason.
@@ -318,10 +347,17 @@ export default function EtpEntryPage() {
   // Hard numeric-standard gate (≤7 int digits, ≤1 decimal, ≥0, ≤9,999,999.9) — the real
   // validator, applied to entered/prefilled values so garbage can never be persisted.
   const rangeError = (s: string) => s.trim() !== "" && !!parseDailyValue(s).error;
+  // A running balance: required (blank is never silently 0), ≤2 decimals, under MAX_BALANCE.
+  const openingError = (s: string) => {
+    if (s.trim() === "") return true;
+    const v = Number(s);
+    return !Number.isFinite(v) || v < 0 || v > MAX_BALANCE || round2(v) !== v;
+  };
   const anyOutOfRange =
     waterRows.some((r) => rangeError(waterView[r.code].initial) || rangeError(waterView[r.code].final)) ||
     energyRows.some((r) => rangeError(energyView[r.code].initial) || rangeError(energyView[r.code].final)) ||
-    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
+    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch) ||
+    openingError(sludge.opening) || openingError(salt.opening);
 
   /**
    * Custom columns are meters now, so they get the same Initial/Final/Total treatment as water
@@ -471,16 +507,29 @@ export default function EtpEntryPage() {
   const usage = authorisationUsage(projectedSludge, industry?.authorisedQuantityKg);
   const warnLevel = authorisedQuantityWarning(projectedSludge, industry?.authorisedQuantityKg);
 
+  /**
+   * Whether a ledger's opening is a hand-set stock count: typed now and different from the carried
+   * closing, or - when not touched this time - whatever was already on record. Such an opening is an
+   * anchor that a later correction of an earlier day does not move.
+   */
+  const openingManual = (l: "sludge" | "salt", st: LedgerState): boolean => {
+    const carried = carrySource?.[l]?.closing;
+    if (!st.openingEdited) return !!existingEntry?.[l]?.openingManual;
+    return carried != null && round2(num(st.opening)) !== round2(carried);
+  };
+
   const buildInput = (status: EntryStatus) => ({
     industryId: industryId as string,
     date: entryDate,
     status,
-    water: Object.fromEntries(WATER_METERS.map((m) => [m.code, { initial: num(waterView[m.code].initial), final: num(waterView[m.code].final) }])),
+    water: Object.fromEntries(
+      WATER_METERS.filter((m) => !blankOptional(m.code)).map((m) => [m.code, { initial: num(waterView[m.code].initial), final: num(waterView[m.code].final) }]),
+    ),
     waterRemark,
     energy: Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: num(energyView[m.code].initial), final: num(energyView[m.code].final) }])),
     energyRemark,
-    sludge: { opening: sludge.opening, generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
-    salt: { opening: salt.opening, generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
+    sludge: { opening: num(sludge.opening), openingManual: openingManual("sludge", sludge), generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
+    salt: { opening: num(salt.opening), openingManual: openingManual("salt", salt), generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
     // A column with no Final files a blank (null) and NO meter reading: storing the carried
     // Initial against an empty Final would report a fabricated - usually negative - total.
     customMeters: customColumns.length
@@ -502,21 +551,24 @@ export default function EtpEntryPage() {
   // The existing ledger validation, applied to this section alone.
   const ledgerBlocked =
     sludgeNeedsManifest || saltNeedsManifest || sludgeOverStock || saltOverStock || closingNegative ||
-    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
+    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch) ||
+    openingError(sludge.opening) || openingError(salt.opening);
 
   const onSaveLedgers = async () => {
     const expected = ledgerBase.current;
     if (!industryId || !uid || !entryDate || !existingEntry || !expected || ledgerBlocked || ledgerSaveInFlight.current) return;
     ledgerSaveInFlight.current = true;
     setSavingLedgers(true);
-    const pick = (l: LedgerState) => ({
+    const pick = (name: "sludge" | "salt", l: LedgerState) => ({
+      opening: num(l.opening),
+      openingManual: openingManual(name, l),
       generation: num(l.generation),
       dispatch: num(l.dispatch),
       dateOfDisposal: l.dateOfDisposal,
       manifestNo: l.manifestNo,
       remark: l.remark,
     });
-    const res = await saveLedgers(industryId, entryDate, { sludge: pick(sludge), salt: pick(salt) }, expected, uid);
+    const res = await saveLedgers(industryId, entryDate, { sludge: pick("sludge", sludge), salt: pick("salt", salt) }, expected, uid);
     ledgerSaveInFlight.current = false;
     setSavingLedgers(false);
     if (!res.ok) {
@@ -625,12 +677,15 @@ export default function EtpEntryPage() {
         </div>
         <p className="text-xs text-muted-foreground">
           {lockWaterInitials || lockEnergyInitials
-            ? "Pick any past date — including earlier months and years. Initial readings & opening balances are carried forward from the previous entry and cannot be edited."
+            ? "Pick any past date — including earlier months and years. Initial readings are carried forward from the previous entry and cannot be edited; opening balances are carried forward and can be adjusted."
             : carry?.isFirstEver
               ? "First entry — enter each meter's current reading as the Initial (baseline)."
               : "The previous day's entry is missing — Initials are prefilled from the last entry; submission needs a continuity override."}
         </p>
       </div>
+
+      {/* The Monitoring Body corrected readings of this day in its Logbook. */}
+      {existingEntry?.corrections?.length ? <CorrectionNotice entry={existingEntry} customColumns={customColumns} /> : null}
 
       {/* continuity block */}
       {missingPriorDay && (
@@ -666,18 +721,21 @@ export default function EtpEntryPage() {
         <BaselineNotice notices={baselineNotices} />
         <div className="mt-4 space-y-6">
           {WATER_GROUPS.map((g) => (
-            <MeterTable
-              key={g.id}
-              caption={g.label}
-              unit={g.unit}
-              meters={WATER_METERS.filter((m) => m.group === g.id)}
-              state={waterView}
-              rows={waterRows}
-              onChange={setMeter("water")}
-              readonlyInitial={(code) => lockWaterInitials || !!baselineFor("water", code)}
-              initialHintOf={(code) => baselineHint(baselineFor("water", code))}
-              grandTotal={groupTotals[g.id]}
-            />
+            <div key={g.id} className="space-y-3">
+              {g.id === "ro" ? <RoInstructions required={roStage34Required(industry)} /> : null}
+              <MeterTable
+                caption={g.label}
+                unit={g.unit}
+                meters={WATER_METERS.filter((m) => m.group === g.id)}
+                state={waterView}
+                rows={waterRows}
+                onChange={setMeter("water")}
+                readonlyInitial={(code) => !!meterCarry[meterKeyOf("water", code)] || !!baselineFor("water", code)}
+                initialHintOf={(code) => baselineHint(baselineFor("water", code))}
+                noteOf={(code) => (optionalWater(code) ? "Optional for this plant — leave the Final blank if there is no separate meter" : undefined)}
+                grandTotal={groupTotals[g.id]}
+              />
+            </div>
           ))}
         </div>
         <RemarkField value={waterRemark} onChange={setWaterRemark} />
@@ -694,7 +752,7 @@ export default function EtpEntryPage() {
             state={energyView}
             rows={energyRows}
             onChange={setMeter("energy")}
-            readonlyInitial={(code) => lockEnergyInitials || !!baselineFor("energy", code)}
+            readonlyInitial={(code) => !!meterCarry[meterKeyOf("energy", code)] || !!baselineFor("energy", code)}
             initialHintOf={(code) => baselineHint(baselineFor("energy", code))}
           />
         </div>
@@ -705,8 +763,8 @@ export default function EtpEntryPage() {
       <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">
         <SectionTitle icon={<Trash2 className="h-4 w-4" />}>Daily Sludge &amp; MEE-Salt Ledgers (kg)</SectionTitle>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <LedgerCard title="Daily ETP Sludge Entry" noun="Sludge" state={sludge} setState={setSludge} closing={sludgeClosing} needsManifest={sludgeNeedsManifest} overStock={sludgeOverStock} negative={sludgeClosing < 0} />
-          <LedgerCard title="ATFD Salt (MEE Section) / PAN Salt (MEE)" noun="Salt" state={salt} setState={setSalt} closing={saltClosing} needsManifest={saltNeedsManifest} overStock={saltOverStock} negative={saltClosing < 0} authNote="Authorisation quantity not configured for MEE salt." />
+          <LedgerCard title="Daily ETP Sludge Entry" noun="Sludge" state={sludge} setState={setSludge} carriedOpening={carrySource?.sludge?.closing ?? null} closing={sludgeClosing} needsManifest={sludgeNeedsManifest} overStock={sludgeOverStock} negative={sludgeClosing < 0} />
+          <LedgerCard title="ATFD Salt (MEE Section) / PAN Salt (MEE)" noun="Salt" state={salt} setState={setSalt} carriedOpening={carrySource?.salt?.closing ?? null} closing={saltClosing} needsManifest={saltNeedsManifest} overStock={saltOverStock} negative={saltClosing < 0} authNote="Authorisation quantity not configured for MEE salt." />
         </div>
         {usage.configured ? (
           <div className={`mt-3 rounded-xl border p-3 text-sm ${warnLevel === "exceeded" ? "border-red-500/40 bg-red-500/10 text-red-600" : warnLevel === "approaching" ? "border-amber-500/40 bg-amber-500/10 text-amber-600" : "border-border bg-muted/30 text-muted-foreground"}`}>
@@ -916,6 +974,7 @@ function MeterTable({
   unitOf,
   onRemove,
   initialHintOf,
+  noteOf,
 }: {
   caption: string;
   unit: string;
@@ -934,6 +993,8 @@ function MeterTable({
   onRemove?: (code: string, label: string) => void;
   /** Explains a locked Initial that did NOT come from the previous day (e.g. a meter reset). */
   initialHintOf?: (code: string) => string | undefined;
+  /** A short note under a row's label (e.g. an optional meter). */
+  noteOf?: (code: string) => string | undefined;
 }) {
   const rowByCode = Object.fromEntries(rows.map((r) => [r.code, r]));
   const lockOf = (code: string) => (typeof readonlyInitial === "function" ? readonlyInitial(code) : readonlyInitial);
@@ -982,7 +1043,10 @@ function MeterTable({
               return (
                 <tr key={m.code} className="border-t border-border/60 align-middle">
                   <td className="py-2 pr-3 text-muted-foreground">{i + 1}</td>
-                  <td className="py-2 pr-3 text-foreground">{m.label}</td>
+                  <td className="py-2 pr-3 text-foreground">
+                    {m.label}
+                    {noteOf?.(m.code) ? <span className="mt-0.5 block text-[11px] font-normal text-muted-foreground">{noteOf(m.code)}</span> : null}
+                  </td>
                   <td className="py-2 pr-3">
                     <div className="relative">
                       <input
@@ -1058,6 +1122,7 @@ function LedgerCard({
   noun,
   state,
   setState,
+  carriedOpening,
   closing,
   needsManifest,
   overStock,
@@ -1068,6 +1133,8 @@ function LedgerCard({
   noun: string;
   state: LedgerState;
   setState: React.Dispatch<React.SetStateAction<LedgerState>>;
+  /** The previous day's closing this opening is normally carried from (null: nothing before it). */
+  carriedOpening: number | null;
   closing: number;
   needsManifest: boolean;
   overStock: boolean;
@@ -1078,10 +1145,20 @@ function LedgerCard({
   return (
     <div className="rounded-xl border border-border bg-muted/20 p-4">
       <h4 className="font-display text-sm font-bold text-foreground">{title}</h4>
-      <p className="mt-0.5 text-xs text-muted-foreground">Day-wise stock, in kg. Closing = Opening + Generation − Dispatch.</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Day-wise stock, in kg. Closing = Opening + Generation − Dispatch. The opening is carried from the previous day&apos;s closing; change it
+        to record an actual stock count.
+      </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <Field label="Opening Balance in kg (carried)">
-          <div className={readonlyCls}>{formatNumber(state.opening)} kg</div>
+        <Field label="Opening Balance in kg">
+          <input
+            inputMode="decimal"
+            aria-label={`${noun} opening balance in kg`}
+            value={state.opening}
+            onChange={(e) => setState((s) => ({ ...s, opening: balanceFilter(e.target.value), openingEdited: true }))}
+            className={`${inputCls}${state.opening.trim() === "" ? " border-red-500/70" : ""}`}
+            placeholder="0"
+          />
         </Field>
         <Field label={`${noun} Generation in kg`}>
           <input inputMode="decimal" value={state.generation} onChange={(e) => set("generation", numFilter(e.target.value))} className={inputCls} placeholder="0" />
@@ -1104,6 +1181,14 @@ function LedgerCard({
           <input value={state.remark} onChange={(e) => set("remark", e.target.value)} className={inputCls} placeholder="Note (optional)" />
         </Field>
       </div>
+      {state.opening.trim() === "" ? <p className="mt-2 text-xs text-red-500">Enter the opening balance (0 if there is no stock).</p> : null}
+      {state.opening.trim() !== "" && carriedOpening != null && round2(num(state.opening)) !== round2(carriedOpening) ? (
+        <p className="mt-2 rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-700">
+          Opening differs from the previous day&apos;s closing ({formatNumber(carriedOpening)} kg) by{" "}
+          {round2(num(state.opening) - carriedOpening) > 0 ? "+" : ""}
+          {formatNumber(round2(num(state.opening) - carriedOpening))} kg. Later days carry on from this opening.
+        </p>
+      ) : null}
       {needsManifest && <p className="mt-2 text-xs text-red-500">Dispatch requires a Manifest No. and a Date of disposal.</p>}
       {overStock && <p className="mt-1 text-xs text-red-500">Dispatch cannot exceed Opening + Generation.</p>}
       {authNote && <p className="mt-2 text-xs text-muted-foreground">{authNote}</p>}
@@ -1137,6 +1222,63 @@ function BaselineNotice({ notices }: { notices: { label: string; unit: string; b
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** RSPCB's RO flow meter reading instructions, and what they mean for this plant. */
+function RoInstructions({ required }: { required: boolean }) {
+  return (
+    <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-800">
+      <p className="font-semibold">RO flow meter reading instructions</p>
+      <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+        {RO_READING_INSTRUCTIONS.map((t) => (
+          <li key={t}>{t}</li>
+        ))}
+      </ol>
+      <p className="mt-1.5 font-medium">
+        {required
+          ? "This plant has RO Stage III/IV capacity registered, so the separate 3rd & 4th stage permeate and reject readings are required."
+          : "This plant has no RO Stage III/IV capacity registered, so the 3rd & 4th stage meters are optional — file only the common meters if they are combined."}
+      </p>
+    </div>
+  );
+}
+
+/** Values of this day the Monitoring Body corrected in its Logbook - what changed, from what, and when. */
+function CorrectionNotice({ entry, customColumns }: { entry: EtpEntry; customColumns: readonly { id: string; name: string; order: number }[] }) {
+  const records = entry.corrections ?? [];
+  const direct = records.filter((c) => !c.carried);
+  const lastDirect = direct[direct.length - 1];
+  const lastCarried = records.filter((c) => c.carried).at(-1);
+  const latest = records[records.length - 1];
+  if (!latest) return null;
+  const fmt = (v: number | string | null) => (v == null || v === "" ? "blank" : typeof v === "number" ? formatNumber(v) : v);
+  return (
+    <div className="rounded-2xl border border-violet-500/30 bg-violet-500/5 p-4 text-sm text-violet-900">
+      <p className="font-semibold">Corrected by the Monitoring Body · {formatDate(latest.at, true)}</p>
+      {lastDirect ? (
+        <>
+          <p className="mt-0.5 text-xs text-violet-800">
+            These readings were corrected after you submitted them. The values below are now the ones on record.
+            {direct.length > 1 ? ` ${direct.length} corrections in total.` : ""}
+          </p>
+          <ul className="mt-2 space-y-0.5 text-xs">
+            {lastDirect.changes.slice(0, 8).map((c) => (
+              <li key={c.field}>
+                {describeCorrectionField(c.field, customColumns)}: <span className="font-mono">{fmt(c.from)}</span> →{" "}
+                <span className="font-mono font-semibold">{fmt(c.to)}</span>
+              </li>
+            ))}
+            {lastDirect.changes.length > 8 ? <li>…and {lastDirect.changes.length - 8} more</li> : null}
+          </ul>
+        </>
+      ) : null}
+      {lastCarried && (!lastDirect || lastCarried.at > lastDirect.at) ? (
+        <p className="mt-1 text-xs text-violet-800">
+          This day&apos;s figures also moved on {formatDate(lastCarried.at, true)} because an earlier corrected reading carries into it.
+        </p>
+      ) : null}
     </div>
   );
 }

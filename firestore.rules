@@ -129,13 +129,55 @@ service cloud.firestore {
     function priorIssuePath(industryId, d) {
       return /databases/$(database)/documents/industries/$(industryId)/meterIssues/$(d.meterKey.replace(':', '.') + '.' + string(d.seq - 1));
     }
+    // The report fields every new issue carries, whoever raises it: the meter, its number, the
+    // reading on record, a description - and the signed-in account and the server's time as the
+    // reporter and the moment. Issue n can exist only once issue n-1 is resolved, so a meter never
+    // has two open issues (and never two competing baselines).
+    function newIssueValid(industryId, issueId, d) {
+      return d.industryId == industryId
+        && d.reporterUid == request.auth.uid
+        && d.reporterEmail == request.auth.token.email
+        && d.createdAt == request.time
+        && d.meterKey is string
+        && d.meterKey.matches('^((water|energy):[A-Z0-9_]{1,40}|custom:CC-[A-Za-z0-9_-]{1,40})$')
+        && d.meterLabel is string
+        && d.meterLabel.size() <= 120
+        && d.unit is string
+        && d.unit.size() <= 12
+        && d.description is string
+        && d.description.size() > 0
+        && d.description.size() <= 1000
+        && (d.reportedReading == null || d.reportedReading is number)
+        && (d.reportedReadingDate == null || isDateStr(d.reportedReadingDate))
+        && (!('alertId' in d) || (d.alertId is string && d.alertId.size() <= 64))
+        && d.seq is int
+        && d.seq >= 1
+        && d.seq <= 9999
+        && issueId == issueIdOf(d)
+        && (d.seq == 1
+            || (exists(priorIssuePath(industryId, d))
+                && get(priorIssuePath(industryId, d)).data.status == 'RESOLVED'));
+    }
+    // A resolution: the baseline is a valid reading, a reset is exactly zero, the old sequence's
+    // end is a date (or '' for a meter that never had a reading), and the effective time and the
+    // resolving officer come from the request - never a device clock or a typed name.
+    function resolutionValid(d) {
+      return d.status == 'RESOLVED'
+        && d.resolution in ['RESET', 'RESUME']
+        && isReading(d.newBaseline)
+        && (d.resolution == 'RESUME' || d.newBaseline == 0)
+        && (d.previousReading == null || d.previousReading is number)
+        && (d.afterDate == '' || isDateStr(d.afterDate))
+        && d.resolvedAt == request.time
+        && d.resolvedByUid == request.auth.uid
+        && d.resolvedByEmail == request.auth.token.email;
+    }
 
     match /industries/{industryId}/meterIssues/{issueId} {
       allow read: if isAdmin() || ownsIndustry(industryId);
 
-      // Only the unit's own operator may report: as OPEN, as the signed-in account, at the
-      // server's time, never with resolution fields pre-filled, and only as the meter's NEXT
-      // issue once the previous one is resolved - so a meter never has two open issues.
+      // Only the unit's own operator may report: as OPEN, never with resolution fields pre-filled,
+      // and only as the meter's next issue.
       allow create: if ownsIndustry(industryId)
                     && request.resource.data.keys().hasAll(['meterKey', 'seq', 'meterLabel', 'unit', 'reportedReading',
                                                             'reportedReadingDate', 'description', 'status', 'industryId',
@@ -144,50 +186,37 @@ service cloud.firestore {
                                                              'reportedReadingDate', 'description', 'status', 'industryId',
                                                              'reporterUid', 'reporterEmail', 'createdAt', 'alertId'])
                     && request.resource.data.status == 'OPEN'
-                    && request.resource.data.industryId == industryId
-                    && request.resource.data.reporterUid == request.auth.uid
-                    && request.resource.data.reporterEmail == request.auth.token.email
-                    && request.resource.data.createdAt == request.time
-                    && request.resource.data.meterKey is string
-                    && request.resource.data.meterKey.matches('^((water|energy):[A-Z0-9_]{1,40}|custom:CC-[A-Za-z0-9_-]{1,40})$')
-                    && request.resource.data.meterLabel is string
-                    && request.resource.data.meterLabel.size() <= 120
-                    && request.resource.data.unit is string
-                    && request.resource.data.unit.size() <= 12
-                    && request.resource.data.description is string
-                    && request.resource.data.description.size() > 0
-                    && request.resource.data.description.size() <= 1000
-                    && (request.resource.data.reportedReading == null || request.resource.data.reportedReading is number)
-                    && (request.resource.data.reportedReadingDate == null || isDateStr(request.resource.data.reportedReadingDate))
-                    && (!('alertId' in request.resource.data)
-                        || (request.resource.data.alertId is string && request.resource.data.alertId.size() <= 64))
-                    && request.resource.data.seq is int
-                    && request.resource.data.seq >= 1
-                    && request.resource.data.seq <= 9999
-                    && issueId == issueIdOf(request.resource.data)
-                    && (request.resource.data.seq == 1
-                        || (exists(priorIssuePath(industryId, request.resource.data))
-                            && get(priorIssuePath(industryId, request.resource.data)).data.status == 'RESOLVED'));
+                    && newIssueValid(industryId, issueId, request.resource.data);
+
+      // The Monitoring Body may also reset (or resume) a meter directly, without an operator's
+      // report: the issue is created already RESOLVED and marked as raised by the Monitoring Body,
+      // with every report AND resolution field checked as on the other two paths, and the same
+      // numbering - so it can never sit beside an open report for that meter.
+      allow create: if isAdmin()
+                    && request.resource.data.keys().hasAll(['meterKey', 'seq', 'meterLabel', 'unit', 'reportedReading',
+                                                            'reportedReadingDate', 'description', 'status', 'industryId',
+                                                            'reporterUid', 'reporterEmail', 'createdAt', 'raisedBy',
+                                                            'resolution', 'newBaseline', 'previousReading', 'afterDate',
+                                                            'resolvedAt', 'resolvedByUid', 'resolvedByEmail'])
+                    && request.resource.data.keys().hasOnly(['meterKey', 'seq', 'meterLabel', 'unit', 'reportedReading',
+                                                             'reportedReadingDate', 'description', 'status', 'industryId',
+                                                             'reporterUid', 'reporterEmail', 'createdAt', 'raisedBy',
+                                                             'resolution', 'newBaseline', 'previousReading', 'afterDate',
+                                                             'resolvedAt', 'resolvedByUid', 'resolvedByEmail'])
+                    && request.resource.data.raisedBy == 'monitoring-body'
+                    && newIssueValid(industryId, issueId, request.resource.data)
+                    && resolutionValid(request.resource.data);
 
       // Only the Monitoring Body resolves, only from OPEN (so never twice), touching only the
-      // resolution fields and supplying all of them. The baseline is a valid reading; a reset is
-      // exactly zero; the effective time is the server's, never a device clock.
+      // resolution fields and supplying all of them.
       allow update: if isAdmin()
                     && resource.data.status == 'OPEN'
-                    && request.resource.data.status == 'RESOLVED'
                     && request.resource.data.diff(resource.data).affectedKeys()
                          .hasOnly(['status', 'resolution', 'newBaseline', 'previousReading', 'afterDate',
                                    'resolvedAt', 'resolvedByUid', 'resolvedByEmail'])
                     && request.resource.data.keys().hasAll(['resolution', 'newBaseline', 'previousReading', 'afterDate',
                                                             'resolvedAt', 'resolvedByUid', 'resolvedByEmail'])
-                    && request.resource.data.resolution in ['RESET', 'RESUME']
-                    && isReading(request.resource.data.newBaseline)
-                    && (request.resource.data.resolution == 'RESUME' || request.resource.data.newBaseline == 0)
-                    && (request.resource.data.previousReading == null || request.resource.data.previousReading is number)
-                    && (request.resource.data.afterDate == '' || isDateStr(request.resource.data.afterDate))
-                    && request.resource.data.resolvedAt == request.time
-                    && request.resource.data.resolvedByUid == request.auth.uid
-                    && request.resource.data.resolvedByEmail == request.auth.token.email;
+                    && resolutionValid(request.resource.data);
 
       // History is never deleted.
       allow delete: if false;

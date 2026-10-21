@@ -192,6 +192,14 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
                 Amended
               </span>
             ) : null}
+            {row.original.corrections?.some((c) => !c.carried) ? (
+              <span
+                title={`Corrected in the Logbook on ${formatDate(row.original.corrections.filter((c) => !c.carried).at(-1)!.at, true)}`}
+                className="rounded-full bg-violet-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700"
+              >
+                Corrected
+              </span>
+            ) : null}
           </span>
         );
       },

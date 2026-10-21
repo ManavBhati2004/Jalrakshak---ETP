@@ -36,6 +36,9 @@ import {
   openIssueFor,
   istDateString,
   baselinesFrom,
+  roStage34Required,
+  isOptionalWaterMeter,
+  deriveWaterFigures,
   customColumnUnit,
   meterRowStatus,
   toMeterReading,
@@ -781,5 +784,27 @@ describe("meter issue ids and baselines from stored issues", () => {
       issue({ seq: 1.5 }),
     ];
     expect(baselinesFrom(bad)).toEqual([]);
+  });
+});
+
+describe("RO 3rd & 4th stage meters follow the unit's registered RO capacity", () => {
+  it("separate 3&4 meters are mandatory only where RO Stage III or IV capacity is registered", () => {
+    expect(roStage34Required({ roStage3: 0, roStage4: 0 })).toBe(false);
+    expect(roStage34Required({})).toBe(false);
+    expect(roStage34Required(undefined)).toBe(false);
+    expect(roStage34Required({ roStage3: 95 })).toBe(true);
+    expect(roStage34Required({ roStage4: 55 })).toBe(true);
+  });
+
+  it("only the two 3&4 meters can be optional, and only for a plant without RO III/IV", () => {
+    expect(isOptionalWaterMeter("RO_PERMEATE_3_4", {})).toBe(true);
+    expect(isOptionalWaterMeter("RO_REJECT_3_4", {})).toBe(true);
+    expect(isOptionalWaterMeter("RO_PERMEATE_COMMON", {})).toBe(false);
+    expect(isOptionalWaterMeter("RO_REJECT_3_4", { roStage3: 10 })).toBe(false);
+  });
+
+  it("an unfiled optional meter adds nothing to the RO grand total", () => {
+    const water = { RO_FEED_1_2: { initial: 0, final: 10, total: 10 }, RO_REJECT_1_2: { initial: 0, final: 2, total: 2 } };
+    expect(deriveWaterFigures(water).waterTotals.ro).toBe(12);
   });
 });

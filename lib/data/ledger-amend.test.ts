@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { amendLedgers, MAX_CARRIED_RECORDS, MAX_EDIT_RECORDS, type LedgerExpectation, type LedgerInputs } from "./ledger-amend";
+import { amendLedgers, relinkLedgers, MAX_CARRIED_RECORDS, MAX_EDIT_RECORDS, type LedgerExpectation, type LedgerInputs } from "./ledger-amend";
 import type { Approval, EtpEntry, HwLedger, LedgerEdit } from "@/lib/types";
 
 const ledger = (opening: number, generation: number, dispatch: number, extra: Partial<HwLedger> = {}): HwLedger => ({
@@ -241,5 +241,91 @@ describe("amendLedgers — the audit trail stays exact and bounded", () => {
     const d2 = r.entries.find((e) => e.date === "2026-10-02")!.ledgerEdits!;
     expect(d2.filter((x) => x.kind === "carried")).toHaveLength(MAX_CARRIED_RECORDS);
     expect(d2.at(-1)).toMatchObject({ kind: "carried", sourceDate: "2026-10-01" });
+  });
+});
+
+describe("opening balance editable on any day", () => {
+  it("an opening typed on a mid-month day is kept, recorded, and later carried days follow it", () => {
+    const es = chain();
+    const r = amendLedgers(es, "IND-1", "2026-10-02", { sludge: { ...inputs(es[1].sludge!), opening: 130 }, salt: inputs(es[1].salt!) }, "op", AT);
+    if (!r.ok) throw new Error(r.error);
+    const by = (d: string) => r.entries.find((e) => e.date === d)!.sludge!;
+    expect(by("2026-10-02")).toMatchObject({ opening: 130, closing: 180 });
+    expect(by("2026-10-03")).toMatchObject({ opening: 180, closing: 210 });
+    expect(by("2026-10-01")).toMatchObject({ opening: 0, closing: 100 }); // earlier days never move
+    expect(r.entries.find((e) => e.date === "2026-10-02")!.ledgerEdits!.at(-1)!.changes).toEqual([
+      { ledger: "sludge", field: "opening", from: 100, to: 130 },
+    ]);
+  });
+
+  it("an opening that was set by hand on a later day is kept when an earlier day changes", () => {
+    const es = chain().map((e) => (e.date === "2026-10-03" ? { ...e, sludge: { ...ledger(500, 30, 0), openingManual: true } } : e)); // a stock count
+    const r = amendLedgers(es, "IND-1", "2026-10-01", { sludge: { ...inputs(es[0].sludge!), generation: 120 }, salt: inputs(es[0].salt!) }, "op", AT);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.entries.find((e) => e.date === "2026-10-02")!.sludge).toMatchObject({ opening: 120, closing: 170 });
+    expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: 500, closing: 530 });
+    expect(r.editedDates).toEqual(["2026-10-01", "2026-10-02"]);
+  });
+
+  it("refuses an invalid opening", () => {
+    const es = chain();
+    for (const opening of [-1, 1.234, Number.NaN]) {
+      const r = amendLedgers(es, "IND-1", "2026-10-02", { sludge: { ...inputs(es[1].sludge!), opening }, salt: inputs(es[1].salt!) }, "op", AT);
+      expect(r.ok).toBe(false);
+    }
+  });
+});
+
+describe("relinkLedgers — a backfilled day joins the chain", () => {
+  it("later days that carried from the day before the gap now carry from the new day", () => {
+    // 1st and 3rd filed; the 3rd carried the 1st's closing (100). The 2nd is backfilled with 40 more.
+    const before = [day("2026-10-01", ledger(0, 100, 0), ledger(0, 0, 0)), day("2026-10-03", ledger(100, 10, 0), ledger(0, 0, 0))];
+    const second = day("2026-10-02", ledger(100, 40, 0), ledger(0, 0, 0));
+    const r = relinkLedgers(before, [second, ...before], "IND-1", new Set([`${second.id}:sludge`, `${second.id}:salt`]));
+    if (!r.ok) throw new Error(r.error);
+    expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: 140, closing: 150 });
+    expect([...r.moved]).toEqual(["E-2026-10-03"]);
+  });
+});
+
+describe("relinkLedgers — review fixes", () => {
+  it("a small difference already on record is kept, and the correction still carries through it", () => {
+    // Imported data: the 3rd opens 0.1 kg above the 2nd's closing (150). Not a hand-set anchor.
+    const es = chain().map((e) => (e.date === "2026-10-03" ? { ...e, sludge: ledger(150.1, 30, 0) } : e));
+    const r = amendLedgers(es, "IND-1", "2026-10-01", { sludge: { ...inputs(es[0].sludge!), generation: 200 }, salt: inputs(es[0].salt!) }, "op", AT);
+    if (!r.ok) throw new Error(r.error);
+    const d3 = r.entries.find((e) => e.date === "2026-10-03")!.sludge!;
+    expect(d3.opening).toBe(250.1); // +100 like every other day, the 0.1 kept
+    expect(d3.closing).toBe(280.1);
+  });
+
+  it("a draft's figures never move a later filed day, though the draft itself follows", () => {
+    const before = [
+      day("2026-10-01", ledger(0, 100, 0), ledger(0, 0, 0)),
+      day("2026-10-03", ledger(100, 10, 0), ledger(0, 0, 0)),
+    ];
+    const draft = day("2026-10-02", ledger(100, 50, 0), ledger(0, 0, 0), { entryStatus: "DRAFT", status: "pending" });
+    const saved = relinkLedgers(before, [draft, ...before], "IND-1", new Set([`${draft.id}:sludge`, `${draft.id}:salt`]));
+    if (!saved.ok) throw new Error(saved.error);
+    expect(saved.entries.find((e) => e.date === "2026-10-03")!.sludge!.opening).toBe(100); // untouched
+    // once the draft is submitted, the 3rd follows it
+    const submitted = { ...draft, entryStatus: "SUBMITTED" as const };
+    const after = relinkLedgers(saved.entries, saved.entries.map((e) => (e.id === draft.id ? submitted : e)), "IND-1", new Set([`${draft.id}:sludge`, `${draft.id}:salt`]));
+    if (!after.ok) throw new Error(after.error);
+    expect(after.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: 150, closing: 160 });
+  });
+
+  it("a later draft follows an earlier correction", () => {
+    const es = [...chain().slice(0, 2), day("2026-10-03", ledger(150, 30, 0), ledger(15, 0, 0), { entryStatus: "DRAFT", status: "pending" })];
+    const r = amendLedgers(es, "IND-1", "2026-10-01", { sludge: { ...inputs(es[0].sludge!), generation: 120 }, salt: inputs(es[0].salt!) }, "op", AT);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge!.opening).toBe(170);
+  });
+
+  it("marks a typed opening as hand-set, and a large running balance is allowed", () => {
+    const es = chain();
+    const r = amendLedgers(es, "IND-1", "2026-10-02", { sludge: { ...inputs(es[1].sludge!), opening: 12345678.5, openingManual: true }, salt: inputs(es[1].salt!) }, "op", AT);
+    if (!r.ok) throw new Error(r.error);
+    expect(r.entries.find((e) => e.date === "2026-10-02")!.sludge).toMatchObject({ opening: 12345678.5, openingManual: true });
   });
 });

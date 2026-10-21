@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { firestoreStorage, remoteApply, type IndustrySlice, type StoreData } from "@/lib/data/firestore-storage";
+import { firestoreStorage, remoteApply, syncContext, type IndustrySlice, type StoreData } from "@/lib/data/firestore-storage";
 import { DEFAULT_CUSTOM_COLUMN_UNIT } from "@/lib/types";
 import type {
   Industry,
@@ -27,7 +27,8 @@ import {
   buildEtpApprovals,
 } from "@/lib/data/seed";
 import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
-import { toMeterReading, groupGrandTotals, toLedger, round2, validateEntryDate, localDateString } from "@/lib/data/etp-calc";
+import { toMeterReading, toLedger, round2, validateEntryDate, localDateString, deriveWaterFigures } from "@/lib/data/etp-calc";
+import { relinkLedgers, withCarriedNote } from "@/lib/data/ledger-amend";
 import { decidedApproval } from "@/lib/data/approval-decisions";
 
 export interface ReadingInput {
@@ -91,6 +92,8 @@ export interface MeterInput {
 }
 export interface LedgerInput {
   opening: number;
+  /** The opening was typed by hand (a stock count), not carried - see HwLedger.openingManual. */
+  openingManual?: boolean;
   generation: number;
   dateOfDisposal: string;
   dispatch: number;
@@ -292,7 +295,6 @@ export const useDataStore = create<DataState>()(
         for (const code of Object.keys(input.water)) water[code] = toMeterReading(input.water[code].initial, input.water[code].final);
         const energy: Record<string, MeterReading> = {};
         for (const code of Object.keys(input.energy)) energy[code] = toMeterReading(input.energy[code].initial, input.energy[code].final);
-        const waterTotals = groupGrandTotals(water);
 
         /**
          * Custom columns are meters too, so their daily figure is derived, never typed: the
@@ -321,18 +323,9 @@ export const useDataStore = create<DataState>()(
         const sludge = toLedger(input.sludge);
         const salt = toLedger(input.salt);
 
-        // Derive the retained legacy scalars from the water-meter totals (dashboards/CSV).
-        const legacy = (key: string) => {
-          const def = WATER_METERS.find((m) => m.legacyKey === key);
-          return def ? Number(water[def.code]?.total ?? 0) : 0;
-        };
-        const freshWaterConsumption = legacy("freshWaterConsumption");
-        const etpInlet = legacy("etpInlet");
-        const etpReuse = legacy("etpReuse");
-        const roInlet = legacy("roInlet");
-        const roReject = legacy("roReject");
-        const roPermeate = legacy("roPermeate");
-        const totalWaterIntake = round2(freshWaterConsumption + etpReuse + roPermeate);
+        // Group totals and the retained legacy scalars (dashboards/CSV), derived from the water-meter
+        // totals - the same derivation a Monitoring-Body correction uses.
+        const { waterTotals, freshWaterConsumption, etpInlet, etpReuse, roInlet, roReject, roPermeate, totalWaterIntake } = deriveWaterFigures(water);
 
         // One parent record per unit/date: reuse the id of any existing entry (draft → submit).
         const prior = get().etpEntries.find((e) => e.industryId === input.industryId && e.date === input.date);
@@ -381,7 +374,22 @@ export const useDataStore = create<DataState>()(
           // The entry is rebuilt from scratch here, so the amendment history must be carried over
           // explicitly - otherwise any later Save Draft or Submit would silently erase it.
           ...(prior?.ledgerEdits?.length ? { ledgerEdits: prior.ledgerEdits } : {}),
+          ...(prior?.corrections?.length ? { corrections: prior.corrections } : {}),
         };
+
+        /**
+         * Sludge & Salt carry forward: later days whose opening was carried from this day follow its
+         * new closing; an opening set by hand on a later day is kept. Refused - nothing written - if a
+         * later day would be left dispatching more than its stock or with a negative closing.
+         */
+        const before = get().etpEntries;
+        const linked = relinkLedgers(
+          before,
+          [entry, ...before.filter((e) => !(e.industryId === input.industryId && e.date === input.date))],
+          input.industryId,
+          new Set([`${id}:sludge`, `${id}:salt`]),
+        );
+        if (!linked.ok) return { entry: null, alerts: [], error: linked.error };
 
         // Alerts + the Monitoring-Body approval are created only on SUBMIT (never on drafts).
         const fired: AlertType[] = [];
@@ -431,7 +439,9 @@ export const useDataStore = create<DataState>()(
           : null;
 
         set((s) => {
-          const etpEntries = [entry, ...s.etpEntries.filter((e) => !(e.industryId === input.industryId && e.date === input.date))];
+          const etpEntries = linked.entries.map((e) =>
+            linked.moved.has(e.id) ? withCarriedNote(e, input.date, submittedAt, syncContext.uid ?? "", s.approvals) : e,
+          );
           const approvals = approval
             ? [approval, ...s.approvals.filter((a) => a.readingId !== id)]
             : s.approvals.filter((a) => a.readingId !== id);

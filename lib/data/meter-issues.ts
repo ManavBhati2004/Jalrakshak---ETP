@@ -237,3 +237,105 @@ export async function resolveMeterIssue(input: {
   if (alertId) await resolveAlertTx(input.industryId, alertId).catch(() => false);
   return { ok: true };
 }
+
+/** Most reasons fit a line; bounded like an operator's description, mirrored by the rules. */
+export const MAX_RESET_REASON = MAX_ISSUE_DESCRIPTION;
+
+/**
+ * The Monitoring Body resets (or resumes) a meter directly, without waiting for the unit to report
+ * it - e.g. after inspecting a replaced meter. Recorded exactly like a resolved report: the meter's
+ * next numbered issue, created already RESOLVED and marked `raisedBy: "monitoring-body"`, so the
+ * sequencing, the entry page's notice and the reports treat it identically. The old meter's last
+ * reading stays on its day and is kept on the record as `previousReading`.
+ *
+ * One transaction: refuses if the meter already has an open report (resolve that one instead) or
+ * if its latest reading is no longer the one the officer confirmed against.
+ */
+export async function resetMeterDirectly(input: {
+  industryId: string;
+  meterKey: string;
+  meterLabel: string;
+  unit: string;
+  reason: string;
+  resolution: MeterIssueResolution;
+  newBaseline: number;
+  /** The meter's latest reading as the officer was shown it, or null for none. */
+  confirmed: Reading;
+  /** The unit's issues as currently known - only a starting point for the number search. */
+  known: readonly MeterIssue[];
+}): Promise<{ ok: true; issueId: string } | { ok: false; error: string; stale?: { current: Reading } }> {
+  const bad = baselineError(input.resolution, input.newBaseline);
+  if (bad) return { ok: false, error: bad };
+  const reason = input.reason.trim().slice(0, MAX_RESET_REASON);
+  if (!reason) return { ok: false, error: "Give a reason for the reset (e.g. meter replaced)." };
+  const user = auth.currentUser;
+  if (!user?.email) return { ok: false, error: "Your session has expired. Sign in again." };
+
+  const unitRef = doc(db, "industries", input.industryId);
+  const start = Math.max(1, lastIssueSeq(input.known, input.meterKey));
+  try {
+    const issueId = await runTransaction(db, async (tx) => {
+      const unitSnap = await tx.get(unitRef);
+      if (!unitSnap.exists()) throw new IssueAbort("That unit no longer exists.");
+      let slice: IndustrySlice;
+      try {
+        slice = JSON.parse(String(unitSnap.data().json)) as IndustrySlice;
+      } catch {
+        throw new IssueAbort("That unit's stored data could not be read.");
+      }
+      const latest = latestMeterReading(slice.etpEntries, input.industryId, input.meterKey);
+      if (!sameReading(latest, input.confirmed)) throw new StaleAbort(latest);
+
+      for (let seq = start; seq < start + MAX_SEQ_WALK; seq++) {
+        const ref = doc(issuesCol(input.industryId), issueDocId(input.meterKey, seq));
+        const snap = await tx.get(ref);
+        if (snap.exists()) {
+          if (toIssue(snap).status === "OPEN") {
+            throw new IssueAbort("This meter already has an open report from the unit - resolve it from the list instead.");
+          }
+          continue;
+        }
+        tx.set(ref, {
+          industryId: input.industryId,
+          meterKey: input.meterKey,
+          seq,
+          meterLabel: input.meterLabel,
+          unit: input.unit,
+          reportedReading: latest?.value ?? null,
+          reportedReadingDate: latest?.date ?? null,
+          description: reason,
+          status: "RESOLVED",
+          reporterUid: user.uid,
+          reporterEmail: user.email,
+          createdAt: serverTimestamp(),
+          raisedBy: "monitoring-body",
+          resolution: input.resolution,
+          newBaseline: input.newBaseline,
+          // Where the old sequence ends: taken from the SERVER copy, inside the transaction.
+          previousReading: latest?.value ?? null,
+          afterDate: latest?.date ?? "",
+          resolvedAt: serverTimestamp(),
+          resolvedByUid: user.uid,
+          resolvedByEmail: user.email,
+        });
+        return ref.id;
+      }
+      throw new IssueAbort("This meter has more issues on record than can be listed here. Refresh the page and try again.");
+    });
+    return { ok: true, issueId };
+  } catch (e) {
+    if (e instanceof StaleAbort) {
+      const now = e.current ? `${e.current.value} on ${e.current.date}` : "no reading";
+      return {
+        ok: false,
+        error: `The meter's latest reading is now ${now}, not what you confirmed. Check the new figures and confirm again.`,
+        stale: { current: e.current },
+      };
+    }
+    if (e instanceof IssueAbort) return { ok: false, error: e.message };
+    const code = (e as { code?: string }).code ?? "";
+    if (code === "permission-denied") return { ok: false, error: "Only the Monitoring Body can reset a meter." };
+    if (code === "aborted" || code === "failed-precondition") return { ok: false, error: "The meter changed while saving. Please try again." };
+    return { ok: false, error: "Could not reset the meter. Check your connection and try again." };
+  }
+}

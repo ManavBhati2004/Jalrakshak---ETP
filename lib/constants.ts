@@ -49,6 +49,7 @@ export const DASHBOARD_NAV: NavItem[] = [
   { label: "Help Center", href: "/dashboard/help", icon: "LifeBuoy", group: "Overview", roles: ETP },
   { label: "Industries", href: "/dashboard/industries", icon: "Factory", group: "Monitoring", roles: ADMIN },
   { label: "ETP Units", href: "/dashboard/etp", icon: "Droplets", group: "Monitoring", roles: ADMIN },
+  { label: "Logbook", href: "/dashboard/logbook", icon: "BookOpenCheck", group: "Monitoring", roles: ADMIN },
   { label: "Approvals", href: "/dashboard/approvals", icon: "CheckCircle2", group: "Governance", roles: ADMIN },
   { label: "Compliance", href: "/dashboard/compliance", icon: "ShieldCheck", group: "Governance", roles: ADMIN },
   { label: "Monthly Return", href: "/dashboard/monthly-return", icon: "FileSpreadsheet", group: "Governance", roles: ADMIN },
@@ -63,6 +64,7 @@ export const ADMIN_ONLY_PATHS = [
   "/dashboard/approvals",
   "/dashboard/compliance",
   "/dashboard/reports",
+  "/dashboard/logbook",
 ];
 export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help"];
 
@@ -127,6 +129,13 @@ export const WATER_METERS: readonly WaterMeterDef[] = [
   { code: "MEE_CONDENSATE", label: "Total MEE Condensate", group: "mee" },
   { code: "MEE_REJECT", label: "Total MEE Reject", group: "mee" },
 ] as const;
+
+/** RSPCB's RO flow meter reading instructions, verbatim - shown above the RO meters. */
+export const RO_READING_INSTRUCTIONS: readonly string[] = [
+  "Fill in the readings for the RO 1st & 2nd Stages and the 3rd & 4th Stages separately.",
+  "If the RO Permeate and Reject Flow Meters for the 3rd & 4th Stages are combined in any plant, submit only the reading of the Common Flow Meter for the 1st & 2nd Stages.",
+  "In plants where installing RO up to the 3rd & 4th Stages is mandatory, it is mandatory to install separate RO Permeate Meter and RO Reject Meter for the 3rd & 4th Stages.",
+];
 
 export const WATER_GROUPS: { id: WaterGroup; label: string; unit: string; totalLabel: string }[] = [
   { id: "daily", label: "Daily Log — Fresh / ETP / Tertiary / Reuse", unit: "M3", totalLabel: "ETP Daily Grand Total" },
