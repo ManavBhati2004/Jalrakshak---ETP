@@ -73,7 +73,10 @@ service cloud.firestore {
       // and stamps the operator's ownerUid itself. Letting any signed-in account create a unit
       // stamped with its own uid would let it claim a future IND-### id - and, through the
       // profile link below, the real unit that is later registered under that id.
-      allow create: if isAdmin();
+      // A deleted unit's id is never created again: its operator's profile still points at that id
+      // (the link is write-once), so a new unit under it would be theirs (see retiredUnits).
+      allow create: if isAdmin()
+                    && !exists(/databases/$(database)/documents/retiredUnits/$(industryId));
 
       // An operator may update its own unit — matched either by the profile link
       // or by the ownerUid stamped at creation (covers the brief window before
@@ -82,7 +85,29 @@ service cloud.firestore {
                     || ownsIndustry(industryId)
                     || (signedIn() && resource.data.ownerUid == request.auth.uid);
 
-      allow delete: if isAdmin();
+      // Only the Monitoring Body deletes a unit, and only in the same write that retires its id -
+      // so no deleted unit's id can ever be handed out again.
+      allow delete: if isAdmin()
+                    && existsAfter(/databases/$(database)/documents/retiredUnits/$(industryId));
+    }
+
+    // ---- Deleted units ---------------------------------------------------------
+    // One record per deleted unit - its id, its name, and which officer deleted it when - and the
+    // reason that id stays reserved forever (see the industries create rule). Written only in the
+    // same batch that deletes the unit; never changed or removed afterwards.
+    match /retiredUnits/{industryId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+                    && request.resource.data.keys().hasAll(['industryId', 'name', 'deletedAt', 'deletedByUid', 'deletedByEmail'])
+                    && request.resource.data.keys().hasOnly(['industryId', 'name', 'deletedAt', 'deletedByUid', 'deletedByEmail'])
+                    && request.resource.data.industryId == industryId
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() <= 200
+                    && request.resource.data.deletedAt == request.time
+                    && request.resource.data.deletedByUid == request.auth.uid
+                    && request.resource.data.deletedByEmail == request.auth.token.email
+                    && !existsAfter(/databases/$(database)/documents/industries/$(industryId));
+      allow update, delete: if false;
     }
 
     // ---- Compliance documents (CTE / CTO / Authorization / Recent Notice) -----

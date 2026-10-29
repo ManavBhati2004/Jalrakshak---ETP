@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import { firestoreStorage, remoteApply, syncContext, type IndustrySlice, type StoreData } from "@/lib/data/firestore-storage";
+import { firestoreStorage, remoteApply, retiredUnitIds, syncContext, type IndustrySlice, type StoreData } from "@/lib/data/firestore-storage";
+import { nextIndustryId } from "@/lib/utils";
 import { DEFAULT_CUSTOM_COLUMN_UNIT } from "@/lib/types";
 import type {
   Industry,
@@ -150,6 +151,11 @@ interface DataState {
    * re-persisting (the server already holds it), replacing only that unit's records.
    */
   applyCommittedSlice: (industryId: string, slice: IndustrySlice) => void;
+  /**
+   * Drop a unit the Monitoring Body has just deleted on the server (deleteUnit) from the local
+   * store. Applied without persisting: the server copy is already gone.
+   */
+  removeIndustry: (industryId: string) => void;
 }
 
 const seed = (): StoreData => {
@@ -609,13 +615,9 @@ export const useDataStore = create<DataState>()(
       },
 
       registerIndustry: (input) => {
-        // Derive the next id from the highest existing IND-### number (not the
-        // array length) so ids never collide with seed ids or after a merge.
-        const maxNum = get().industries.reduce((max, i) => {
-          const n = parseInt(String(i.id).replace(/\D/g, ""), 10);
-          return Number.isFinite(n) && n > max ? n : max;
-        }, 0);
-        const id = `IND-${String(maxNum + 1).padStart(3, "0")}`;
+        // Derive the next id from the highest IND-### number ever issued (not the array length) so
+        // ids never collide with seed ids, after a merge, or with a deleted unit's retired id.
+        const id = nextIndustryId([...get().industries.map((i) => i.id), ...retiredUnitIds]);
         const score = 75;
         const industry: Industry = {
           id,
@@ -779,6 +781,22 @@ export const useDataStore = create<DataState>()(
                 : s.compliance,
             };
           });
+        } finally {
+          remoteApply.active = false;
+        }
+      },
+
+      removeIndustry: (industryId) => {
+        remoteApply.active = true;
+        try {
+          set((s) => ({
+            industries: s.industries.filter((i) => i.id !== industryId),
+            readings: s.readings.filter((r) => r.industryId !== industryId),
+            etpEntries: s.etpEntries.filter((e) => e.industryId !== industryId),
+            approvals: s.approvals.filter((a) => a.industryId !== industryId),
+            alerts: s.alerts.filter((a) => a.industryId !== industryId),
+            compliance: s.compliance.filter((c) => c.industryId !== industryId),
+          }));
         } finally {
           remoteApply.active = false;
         }

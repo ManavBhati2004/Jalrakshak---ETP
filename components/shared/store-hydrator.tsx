@@ -13,6 +13,7 @@ import {
   resetSyncCaches,
   loadAllIndustries,
   loadOneIndustry,
+  loadRetiredUnits,
   subscribeAll,
   subscribeOne,
   seedIndustries,
@@ -96,8 +97,11 @@ export function StoreHydrator() {
       // 2) Load the caller's authorized slice of the dataset.
       if (role === "monitoring-admin") {
         try {
+          // Deleted units' ids: never issued again, and what tells a project whose units were all
+          // deleted apart from a brand-new one (null = unknown, so never seed on a failed read).
+          const retired = await loadRetiredUnits().catch(() => null);
           let { data, count } = await loadAllIndustries();
-          if (count === 0) {
+          if (count === 0 && retired === 0) {
             // First-ever admin sign-in against an empty project: bootstrap the
             // per-industry documents from the local seed (regulator-only write).
             await seedIndustries(buildSeedState());

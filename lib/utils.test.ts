@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { parseDisplayDate, formatDate } from "./utils";
+import { parseDisplayDate, formatDate, nextIndustryId } from "./utils";
 
 /* ============================================================================
    A date-only string names a CALENDAR DAY, not an instant, and must render as
@@ -101,5 +101,26 @@ describe("formatDate edge cases", () => {
 
   it("documents that JS rolls a non-existent day over — validateEntryDate is what prevents storing one", () => {
     expect(formatDate("2026-02-30")).toMatch(/Mar/);
+  });
+});
+
+describe("nextIndustryId", () => {
+  it("is one above the highest id, whatever the order", () => {
+    expect(nextIndustryId(["IND-019", "IND-024", "IND-020"])).toBe("IND-025");
+  });
+
+  it("never reissues a deleted unit's id, even when the deleted unit was the newest", () => {
+    // IND-021 was the highest and has been deleted: only the retired list still has it.
+    expect(nextIndustryId(["IND-019", "IND-020"])).toBe("IND-021"); // what reuse would look like
+    expect(nextIndustryId([...["IND-019", "IND-020"], ...new Set(["IND-021"])])).toBe("IND-022");
+  });
+
+  it("starts at IND-001, ignoring ids with no number", () => {
+    expect(nextIndustryId([])).toBe("IND-001");
+    expect(nextIndustryId(["", "IND-", "unit"])).toBe("IND-001");
+  });
+
+  it("keeps counting past 999", () => {
+    expect(nextIndustryId(["IND-999"])).toBe("IND-1000");
   });
 });

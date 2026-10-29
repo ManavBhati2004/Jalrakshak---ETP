@@ -101,10 +101,17 @@ export const syncContext: {
 export const lastWriteAt = new Map<string, number>();
 /** Per-doc serialized slice we last wrote — used to skip redundant writes. */
 const lastWrittenJson = new Map<string, string>();
+/**
+ * Ids of deleted units (`retiredUnits`). A deleted unit's id is never issued again: its operator's
+ * profile still points at it (the link is write-once), so a new unit under that id would be theirs.
+ * Loaded for the regulator at sign-in, and kept current as units are deleted - here or elsewhere.
+ */
+export const retiredUnitIds = new Set<string>();
 
 export function resetSyncCaches() {
   lastWriteAt.clear();
   lastWrittenJson.clear();
+  retiredUnitIds.clear();
 }
 
 /**
@@ -288,6 +295,15 @@ export async function loadAllIndustries(): Promise<{ data: StoreData; count: num
   return { data: mergeSlices(slices), count: snap.size };
 }
 
+/** Load the ids of deleted units (regulator). Returns how many there are. */
+export async function loadRetiredUnits(): Promise<number> {
+  const snap = await getDocs(collection(db, "retiredUnits"));
+  snap.forEach((d) => {
+    retiredUnitIds.add(d.id);
+  });
+  return snap.size;
+}
+
 /** Load a single industry document (operator). */
 export async function loadOneIndustry(industryId: string): Promise<StoreData | null> {
   const d = await getDoc(doc(db, "industries", industryId));
@@ -305,6 +321,13 @@ export function subscribeAll(onData: (data: StoreData) => void): Unsubscribe {
   return onSnapshot(collection(db, "industries"), (snap) => {
     let foreign = false;
     snap.docChanges().forEach((ch) => {
+      // A deleted unit carries no newer stamp, so it is a change in itself: otherwise this session
+      // would keep showing the unit - and write it back on its next store change.
+      if (ch.type === "removed") {
+        retiredUnitIds.add(ch.doc.id);
+        foreign = true;
+        return;
+      }
       const at = (ch.doc.data().updatedAt as number) ?? 0;
       if (at > (lastWriteAt.get(ch.doc.id) ?? 0)) foreign = true;
     });
@@ -324,7 +347,17 @@ export function subscribeAll(onData: (data: StoreData) => void): Unsubscribe {
 /** Live listener over one industry document (operator). */
 export function subscribeOne(industryId: string, onData: (data: StoreData) => void): Unsubscribe {
   return onSnapshot(doc(db, "industries", industryId), (d) => {
-    if (!d.exists()) return;
+    if (!d.exists()) {
+      // The Monitoring Body deleted this unit: clear it, so the operator is not left typing into a
+      // unit whose saves can no longer land. Only a server-confirmed absence of a unit this session
+      // had loaded counts - a unit not created yet, or a cache miss, changes nothing.
+      if (!d.metadata.fromCache && lastWriteAt.has(industryId)) {
+        lastWriteAt.delete(industryId);
+        lastWrittenJson.delete(industryId);
+        onData(emptyData());
+      }
+      return;
+    }
     const raw = d.data();
     const at = (raw.updatedAt as number) ?? 0;
     if (at <= (lastWriteAt.get(industryId) ?? 0)) return; // our echo / stale

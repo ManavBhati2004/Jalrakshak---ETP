@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { initializeApp, deleteApp } from "firebase/app";
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updatePassword, getAuth } from "firebase/auth";
+import { createUserWithEmailAndPassword, deleteUser, signInWithEmailAndPassword, signOut, updatePassword, getAuth } from "firebase/auth";
 import { doc, getDoc, setDoc, getFirestore } from "firebase/firestore";
 import { auth, db, firebaseConfig, connectEmulatorsIfEnabled } from "@/lib/firebase";
 import type { RoleId } from "@/lib/types";
@@ -180,6 +180,60 @@ export async function resetOperatorPassword(input: {
     const code = (e as { code?: string }).code ?? "";
     if (code === "auth/wrong-password" || code === "auth/invalid-credential") return { ok: false, error: "The current password is incorrect." };
     if (code === "auth/user-not-found") return { ok: false, error: "No login account exists for this unit's email." };
+    return { ok: false, error: messageForCode(code) };
+  }
+}
+
+/**
+ * Monitoring-Body deletion of a unit together with its login. Client-only Firebase cannot delete
+ * another user's account, so - as with a password reset - the officer gives the login's current
+ * password and the login is signed in on the secondary app (the officer stays signed in). Order:
+ *  1. sign in, and check the login really is this unit's: its profile link, or - if registration
+ *     never completed that link - the ownerUid stamped on the unit. Nothing is deleted before this;
+ *  2. `deleteUnit` (in the officer's own session) deletes the unit;
+ *  3. only then is the login deleted. If that last step fails the unit stays deleted and
+ *     `loginRemoved` is false.
+ */
+export async function deleteUnitWithLogin(input: {
+  industryId: string;
+  email: string;
+  password: string;
+  deleteUnit: () => Promise<{ ok: true } | { ok: false; error: string }>;
+}): Promise<{ ok: true; loginRemoved: boolean } | { ok: false; error: string }> {
+  const email = input.email.trim().toLowerCase();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return { ok: false, error: "Enter the login's email." };
+  if (!input.password) return { ok: false, error: "Enter the login's password." };
+  try {
+    return await withSecondaryApp(async (secAuth, secDb) => {
+      const cred = await signInWithEmailAndPassword(secAuth, email, input.password);
+      const uid = cred.user.uid;
+      const profile = await getDoc(doc(secDb, "users", uid));
+      const linked = profile.exists() ? ((profile.data().industryId as string | null) ?? null) : null;
+      if (linked !== input.industryId) {
+        const unit = linked ? null : await getDoc(doc(db, "industries", input.industryId));
+        if (unit?.data()?.ownerUid !== uid) {
+          return {
+            ok: false as const,
+            error: linked ? `That login belongs to another unit (${linked}). Nothing was deleted.` : "That login is not this unit's. Nothing was deleted.",
+          };
+        }
+      }
+      const res = await input.deleteUnit();
+      if (!res.ok) return res;
+      try {
+        await deleteUser(cred.user);
+        return { ok: true as const, loginRemoved: true };
+      } catch {
+        return { ok: true as const, loginRemoved: false };
+      }
+    });
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? "";
+    // With email-enumeration protection Firebase answers a wrong password and an unknown email alike.
+    if (code === "auth/invalid-credential" || code === "auth/wrong-password" || code === "auth/user-not-found") {
+      return { ok: false, error: "The password is incorrect, or there is no login with this email. Nothing was deleted." };
+    }
+    if (code === "auth/too-many-requests") return { ok: false, error: "Too many attempts. Wait a few minutes and try again." };
     return { ok: false, error: messageForCode(code) };
   }
 }

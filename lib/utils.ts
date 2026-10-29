@@ -18,6 +18,19 @@ export function formatKLD(n: number) {
 /** Display label for a stored unit — water volume "KL" is shown as "m³" (energy "kWh" unchanged). */
 export const displayUnit = (u: string) => (u === "KL" ? "m³" : u);
 
+/**
+ * The next unit id: one above the highest IND-### number in `ids`. Callers pass every id ever
+ * issued — the current units AND the deleted (retired) ones — so an id is never handed out twice.
+ */
+export function nextIndustryId(ids: Iterable<string>): string {
+  let max = 0;
+  for (const id of ids) {
+    const n = parseInt(String(id).replace(/\D/g, ""), 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return `IND-${String(max + 1).padStart(3, "0")}`;
+}
+
 export function compactNumber(n: number) {
   return new Intl.NumberFormat("en-IN", { notation: "compact", maximumFractionDigits: 1 }).format(n);
 }

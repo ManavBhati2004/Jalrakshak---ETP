@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
-import { Droplets, Recycle, Waves, ChevronRight, ArrowLeft, Download, ClipboardList } from "lucide-react";
+import { Droplets, Recycle, Waves, ChevronRight, ArrowLeft, Download, ClipboardList, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { DataTable } from "@/components/dashboard/data-table";
 import { DocumentsPanel } from "@/components/dashboard/documents-panel";
 import { MeterIssuesAdmin } from "@/components/dashboard/meter-issues-panel";
+import { DeleteUnitDialog } from "@/components/dashboard/delete-unit-dialog";
 import { customColumnUnit, entryCustomTotal, entryMeterTotal } from "@/lib/data/etp-calc";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,7 @@ export default function IndividualEtpPage() {
   const etpEntries = useDataStore((s) => s.etpEntries);
   const etps = industries.filter((i) => i.isIndividualETP);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Industry | null>(null);
 
   const latestByIndustry = useMemo(() => {
     const map: Record<string, EtpEntry | undefined> = {};
@@ -63,42 +65,56 @@ export default function IndividualEtpPage() {
             const count = etpEntries.filter((e) => e.industryId === ind.id).length;
             const color = STATUS_COLOR[complianceStatus(ind.complianceScore)];
             return (
-              <button
+              <div
                 key={ind.id}
-                onClick={() => setSelectedId(ind.id)}
-                className="group flex w-full items-center gap-4 rounded-2xl border border-border bg-card p-4 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+                className="group flex w-full items-center gap-2 rounded-2xl border border-border bg-card pr-3 transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
               >
-                <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-teal-500/15 text-teal-500">
-                  <Droplets className="h-5 w-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <h3 className="truncate font-display text-base font-bold text-foreground">{ind.name}</h3>
-                    <span className="hidden rounded-md bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-500 sm:inline">
-                      Individual ETP
-                    </span>
-                  </div>
-                  <p className="truncate text-sm text-muted-foreground">{ind.area}</p>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <StatusBadge status={ind.status} />
-                    <span className="text-xs text-muted-foreground">
-                      {count} reading{count === 1 ? "" : "s"}
-                    </span>
-                    <span className="text-xs text-muted-foreground">Last: {latest ? formatDate(latest.date) : "—"}</span>
-                  </div>
-                </div>
-                <div className="hidden flex-col items-end sm:flex">
-                  <span className="font-mono text-lg font-bold" style={{ color }}>
-                    {ind.complianceScore}%
+                <button onClick={() => setSelectedId(ind.id)} className="flex min-w-0 flex-1 items-center gap-4 p-4 text-left">
+                  <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-teal-500/15 text-teal-500">
+                    <Droplets className="h-5 w-5" />
                   </span>
-                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground">compliance</span>
-                </div>
-                <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
-              </button>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <h3 className="truncate font-display text-base font-bold text-foreground">{ind.name}</h3>
+                      <span className="hidden rounded-md bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-500 sm:inline">
+                        Individual ETP
+                      </span>
+                    </div>
+                    <p className="truncate text-sm text-muted-foreground">{ind.area}</p>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <StatusBadge status={ind.status} />
+                      <span className="text-xs text-muted-foreground">
+                        {count} reading{count === 1 ? "" : "s"}
+                      </span>
+                      <span className="text-xs text-muted-foreground">Last: {latest ? formatDate(latest.date) : "—"}</span>
+                    </div>
+                  </div>
+                  <div className="hidden flex-col items-end sm:flex">
+                    <span className="font-mono text-lg font-bold" style={{ color }}>
+                      {ind.complianceScore}%
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wide text-muted-foreground">compliance</span>
+                  </div>
+                  <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+                </button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleting(ind)}
+                  aria-label={`Delete ${ind.name}`}
+                  title="Delete this unit"
+                  className="h-9 shrink-0 gap-1.5 rounded-xl border-red-500/40 px-2.5 text-red-600 hover:bg-red-500/10 hover:text-red-600"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span className="hidden sm:inline">Delete</span>
+                </Button>
+              </div>
             );
           })}
         </div>
       )}
+
+      {deleting ? <DeleteUnitDialog industry={deleting} onClose={() => setDeleting(null)} /> : null}
     </div>
   );
 }

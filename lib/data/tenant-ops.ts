@@ -4,10 +4,16 @@
    Firestore transaction.
    ============================================================ */
 
+import { doc, getDoc, serverTimestamp, writeBatch } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
 import { patchTenantSlice } from "@/lib/data/tenant-tx";
+import { quiesceLocalWrites, retiredUnitIds } from "@/lib/data/firestore-storage";
+import { deleteDocument } from "@/lib/data/documents";
 import { approveCandidatesInSlice, type ApprovalCandidate, type CandidateOutcome } from "@/lib/data/approval-decisions";
 import { amendLedgers, type LedgerExpectation, type LedgerInputs } from "@/lib/data/ledger-amend";
 import { applyCorrections, type LogbookContext, type LogbookEdits } from "@/lib/data/logbook";
+import { useDataStore } from "@/lib/store/data";
+import { ETP_DOCUMENT_TYPES } from "@/lib/types";
 
 export interface BulkApproveReport {
   approved: CandidateOutcome[];
@@ -107,6 +113,49 @@ export async function saveCorrections(
   if (!res.ok) return { ok: false, error: res.error };
   if (failure) return { ok: false, error: failure };
   return { ok: true, corrected: res.result };
+}
+
+/**
+ * Delete a unit for good (Monitoring Body). Its uploaded documents go first - a subcollection is not
+ * removed with its parent - then ONE batch deletes the unit and retires its id. The rules accept
+ * neither write without the other, so a deleted unit's id can never be issued again (its operator's
+ * profile still points at it). Meter-issue history stays: the rules keep that undeletable.
+ */
+export async function deleteUnit(industryId: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const user = auth.currentUser;
+  if (!user?.email) return { ok: false, error: "Your session has expired. Sign in again." };
+  // Let earlier store writes reach the server first, so none of them lands after the delete.
+  if (!(await quiesceLocalWrites())) {
+    return { ok: false, error: "Earlier changes are still syncing. Check your connection and try again." };
+  }
+  for (const t of ETP_DOCUMENT_TYPES) {
+    if (!(await deleteDocument(industryId, t.code))) {
+      return { ok: false, error: "Could not remove the unit's uploaded documents, so the unit was not deleted. Try again." };
+    }
+  }
+  const batch = writeBatch(db);
+  batch.set(doc(db, "retiredUnits", industryId), {
+    industryId,
+    name: name.slice(0, 200),
+    deletedAt: serverTimestamp(),
+    deletedByUid: user.uid,
+    deletedByEmail: user.email,
+  });
+  batch.delete(doc(db, "industries", industryId));
+  try {
+    await batch.commit();
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? "";
+    if (code === "permission-denied") {
+      // The usual cause: another officer deleted it a moment ago, so its retirement record exists.
+      const gone = await getDoc(doc(db, "retiredUnits", industryId)).then((d) => d.exists(), () => false);
+      return { ok: false, error: gone ? "This unit has already been deleted, possibly by another officer." : "You do not have permission to delete this unit." };
+    }
+    return { ok: false, error: "Could not delete the unit. Check your connection and try again." };
+  }
+  retiredUnitIds.add(industryId);
+  useDataStore.getState().removeIndustry(industryId);
+  return { ok: true };
 }
 
 /** Close the help-request alert a meter issue raised, once that issue is resolved. */
