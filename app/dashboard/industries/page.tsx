@@ -12,7 +12,8 @@ import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useDataStore } from "@/lib/store/data";
-import { resetOperatorPassword } from "@/lib/store/accounts";
+import { resetUnitPassword } from "@/lib/store/accounts";
+import { PASSWORD_RULES, passwordMeetsRules } from "@/lib/password-rules";
 import type { Industry } from "@/lib/types";
 import { formatNumber, formatDate, cn } from "@/lib/utils";
 import { STATUS_COLOR, complianceStatus } from "@/lib/constants";
@@ -244,7 +245,7 @@ function IndustryDialog({ industry, onClose }: { industry: Industry | null; onCl
               <span className="font-medium text-foreground">{formatDate(industry.lastReadingAt, true)}</span>
             </div>
 
-            <ResetPasswordSection email={industry.email} />
+            <ResetPasswordSection email={industry.email} industryId={industry.id} />
 
             <div className="flex items-center justify-between">
               <StatusBadge status={industry.status} />
@@ -259,34 +260,32 @@ function IndustryDialog({ industry, onClose }: { industry: Industry | null; onCl
   );
 }
 
-/** Admin-only reset of a unit's login password (reauth with the current password + set a new one). */
-function ResetPasswordSection({ email }: { email: string }) {
+/** Admin-only reset of a unit's login password: a new password, typed twice. */
+function ResetPasswordSection({ email, industryId }: { email: string; industryId: string }) {
   const [open, setOpen] = useState(false);
-  const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [showNew, setShowNew] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const checks = [
-    { label: "At least 8 characters", ok: next.length >= 8 },
-    { label: "Contains a letter", ok: /[A-Za-z]/.test(next) },
-    { label: "Contains a number", ok: /[0-9]/.test(next) },
-    { label: "Contains a special character", ok: /[^A-Za-z0-9]/.test(next) },
+    ...PASSWORD_RULES.map((r) => ({ label: r.label, ok: r.ok(next) })),
+    { label: "Both passwords match", ok: confirm !== "" && confirm === next },
   ];
-  const strong = checks.every((c) => c.ok);
+  const ready = checks.every((c) => c.ok) && passwordMeetsRules(next);
 
   const submit = async () => {
-    if (!current || !strong) return;
+    if (!ready) return;
     setBusy(true);
-    const res = await resetOperatorPassword({ email, currentPassword: current, newPassword: next });
+    const res = await resetUnitPassword({ industryId, newPassword: next });
     setBusy(false);
     if (!res.ok) {
       toast.error("Password reset failed", { description: res.error });
       return;
     }
-    toast.success("Login password updated", { description: `New password set for ${email}.` });
-    setCurrent("");
+    toast.success("Login password updated", { description: `New password set for ${res.email ?? email}. The unit's other sessions are signed out.` });
     setNext("");
+    setConfirm("");
     setOpen(false);
   };
 
@@ -301,18 +300,13 @@ function ResetPasswordSection({ email }: { email: string }) {
       {open && (
         <div className="mt-3 space-y-2.5">
           <p className="text-xs text-muted-foreground">
-            Enter the unit&apos;s <span className="font-medium">current</span> password (the one you set) and a new one. This changes the login for <span className="font-medium">{email}</span>.
+            Enter a new password for this unit&apos;s login (<span className="font-medium">{email}</span>) and type it again to confirm.
           </p>
-          <input
-            type="password"
-            value={current}
-            onChange={(e) => setCurrent(e.target.value)}
-            placeholder="Current password"
-            className="h-10 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:border-primary/50"
-          />
           <div className="relative">
             <input
               type={showNew ? "text" : "password"}
+              autoComplete="new-password"
+              aria-label="New password"
               value={next}
               onChange={(e) => setNext(e.target.value)}
               placeholder="New password"
@@ -322,6 +316,15 @@ function ResetPasswordSection({ email }: { email: string }) {
               {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           </div>
+          <input
+            type={showNew ? "text" : "password"}
+            autoComplete="new-password"
+            aria-label="Confirm new password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            placeholder="Confirm new password"
+            className="h-10 w-full rounded-xl border border-border bg-background px-3 text-sm outline-none focus:border-primary/50"
+          />
           <ul className="grid gap-1 sm:grid-cols-2">
             {checks.map((c) => (
               <li key={c.label} className={cn("flex items-center gap-1.5 text-xs", c.ok ? "text-emerald-600" : "text-muted-foreground")}>
@@ -330,7 +333,7 @@ function ResetPasswordSection({ email }: { email: string }) {
               </li>
             ))}
           </ul>
-          <Button size="sm" onClick={submit} disabled={busy || !current || !strong} className="w-full rounded-lg">
+          <Button size="sm" onClick={submit} disabled={busy || !ready} className="w-full rounded-lg">
             {busy ? "Updating…" : "Update password"}
           </Button>
         </div>

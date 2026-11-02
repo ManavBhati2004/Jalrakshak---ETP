@@ -20,9 +20,7 @@ import {
   customColumnUnit,
   meterRowStatus,
   groupGrandTotals,
-  closingBalance,
   dispatchNeedsManifest as needsManifest,
-  dispatchExceedsStock,
   resolveCarryForward,
   authorisationUsage,
   authorisedQuantityWarning,
@@ -32,11 +30,12 @@ import {
   isOptionalWaterMeter,
   roStage34Required,
   carriedMeterSource,
+  carriedCtRatio,
 } from "@/lib/data/etp-calc";
 import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type EntryStatus, type HwLedger, type MeterIssue, type MeterReading } from "@/lib/types";
 import { useMeterIssues } from "@/lib/hooks/use-meter-issues";
 import { saveLedgers } from "@/lib/data/tenant-ops";
-import { MAX_BALANCE, type LedgerExpectation } from "@/lib/data/ledger-amend";
+import type { LedgerExpectation } from "@/lib/data/ledger-amend";
 import type { MeterBaseline } from "@/lib/data/etp-calc";
 import { ReportMeterIssue } from "@/components/dashboard/meter-issues-panel";
 import { WATER_METERS, ENERGY_METERS, WATER_GROUPS, AUTHORISED_QUANTITY_WARNING_PERCENT, RO_READING_INSTRUCTIONS } from "@/lib/constants";
@@ -45,10 +44,11 @@ import { formatNumber, formatDate } from "@/lib/utils";
 
 type MeterState = { initial: string; final: string };
 type LedgerState = {
-  /** Carried from the previous day's closing; may be overwritten with an actual stock count. */
+  /**
+   * Opening, Generation and Remark are not shown on the daily sheet: a filed day keeps its stored
+   * values, and a new day carries the previous closing as its opening.
+   */
   opening: string;
-  /** True once the operator has typed in the opening field since the day was loaded. */
-  openingEdited?: boolean;
   generation: string;
   dateOfDisposal: string;
   dispatch: string;
@@ -60,8 +60,7 @@ const num = (s: string) => {
   const n = Number(s);
   return Number.isFinite(n) ? n : 0;
 };
-// Numeric standard: ≤7 integer digits + ≤2 decimals, nonnegative. A running stock balance is not a
-// daily figure and may have up to 10 integer digits (`balanceFilter`).
+// Numeric standard: ≤7 integer digits + ≤2 decimals, nonnegative.
 const numFilter = (s: string, intDigits = 7) => {
   let v = s.replace(/[^0-9.]/g, "");
   const dot = v.indexOf(".");
@@ -70,7 +69,6 @@ const numFilter = (s: string, intDigits = 7) => {
   const capInt = int.slice(0, intDigits);
   return v.includes(".") ? `${capInt}.${dec.slice(0, 2)}` : capInt;
 };
-const balanceFilter = (s: string) => numFilter(s, 10);
 
 const emptyMeters = (keys: readonly { code: string }[]): Record<string, MeterState> =>
   Object.fromEntries(keys.map((k) => [k.code, { initial: "", final: "" }]));
@@ -95,6 +93,8 @@ export default function EtpEntryPage() {
   const [waterRemark, setWaterRemark] = useState("");
   const [energy, setEnergy] = useState<Record<string, MeterState>>(() => emptyMeters(ENERGY_METERS));
   const [energyRemark, setEnergyRemark] = useState("");
+  // CT ratio per energy meter: recorded with the day, never applied to a total.
+  const [energyCt, setEnergyCt] = useState<Record<string, string>>({});
   // Operator-defined extra columns. Definitions live on this unit's Industry record, so they
   // are tenant-scoped: a column added here can never surface on another unit's sheet.
   const customColumns = useMemo(() => [...(industry?.customColumns ?? [])].sort((a, b) => a.order - b.order), [industry?.customColumns]);
@@ -163,6 +163,13 @@ export default function EtpEntryPage() {
     for (const m of ENERGY_METERS) out[meterKeyOf("energy", m.code)] = carriedMeterSource(etpEntries, industryId, entryDate, "energy", m.code);
     return out;
   }, [etpEntries, industryId, entryDate]);
+  // Each energy meter's last recorded CT ratio, which prefills a new day (it rarely changes).
+  const ctCarry = useMemo(() => {
+    const out: Record<string, number | null> = {};
+    if (!industryId || !entryDate) return out;
+    for (const m of ENERGY_METERS) out[m.code] = carriedCtRatio(etpEntries, industryId, entryDate, m.code);
+    return out;
+  }, [etpEntries, industryId, entryDate]);
 
   /** Whatever is already filed for the selected day, if anything. */
   const existingEntry = useMemo(
@@ -217,8 +224,8 @@ export default function EtpEntryPage() {
     // the operator has typed and not yet submitted.
     const meterKey = JSON.stringify([
       entryDate, existingEntry?.id ?? null, existingEntry?.water ?? null, existingEntry?.energy ?? null,
-      existingEntry?.waterRemark ?? "", existingEntry?.energyRemark ?? "",
-      carrySource?.id ?? null, meterCarry,
+      existingEntry?.waterRemark ?? "", existingEntry?.energyRemark ?? "", existingEntry?.energyCtRatio ?? null,
+      carrySource?.id ?? null, meterCarry, ctCarry,
     ]);
     if (seededMeters.current !== meterKey) {
       seededMeters.current = meterKey;
@@ -226,13 +233,16 @@ export default function EtpEntryPage() {
       setEnergy(seed("energy", ENERGY_METERS, existingEntry?.energy));
       setWaterRemark(existingEntry?.waterRemark ?? "");
       setEnergyRemark(existingEntry?.energyRemark ?? "");
+      // A filed day shows what it recorded; a new day starts from each meter's last CT ratio.
+      setEnergyCt(Object.fromEntries(ENERGY_METERS.map((m) => [m.code, str(existingEntry ? existingEntry.energyCtRatio?.[m.code] : ctCarry[m.code])])));
     }
     const ledgerKey = JSON.stringify([entryDate, existingEntry?.sludge ?? null, existingEntry?.salt ?? null, carrySource?.sludge?.closing ?? 0, carrySource?.salt?.closing ?? 0]);
     if (seededLedgers.current === ledgerKey) return;
     seededLedgers.current = ledgerKey;
     ledgerBase.current = existingEntry ? { entryId: existingEntry.id, sludge: existingEntry.sludge ?? null, salt: existingEntry.salt ?? null } : null;
-    // A balance is not filtered to the daily 7 digits: a large running stock must never be cut short.
-    const bal = (v: number | undefined | null) => (v == null ? "" : balanceFilter(String(v)));
+    // The (hidden) opening is kept exactly - not through the digits-only filter, which would cut a large
+    // running stock short or turn a negative one (stock is no longer checked) positive.
+    const bal = (v: number | undefined | null) => (v == null || !Number.isFinite(v) ? "" : String(round2(v)));
     const ledger = (saved: HwLedger | undefined, openingFallback: number): LedgerState =>
       saved
         ? {
@@ -247,7 +257,7 @@ export default function EtpEntryPage() {
     setSludge(ledger(existingEntry?.sludge, carrySource?.sludge?.closing ?? 0));
     setSalt(ledger(existingEntry?.salt, carrySource?.salt?.closing ?? 0));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [existingEntry, carrySource, industryId, entryDate, meterCarry]);
+  }, [existingEntry, carrySource, industryId, entryDate, meterCarry, ctCarry]);
 
   /**
    * Switch the sheet to another day. The per-day UI state is reset here rather than in an effect
@@ -332,13 +342,8 @@ export default function EtpEntryPage() {
     waterRows.some((r) => waterView[r.code].final.trim() === "" && !optionalWater(r.code)) ||
     energyRows.some((r) => energyView[r.code].final.trim() === "");
 
-  const sludgeClosing = closingBalance(num(sludge.opening), num(sludge.generation), num(sludge.dispatch));
-  const saltClosing = closingBalance(num(salt.opening), num(salt.generation), num(salt.dispatch));
   const sludgeNeedsManifest = needsManifest(num(sludge.dispatch), sludge.manifestNo, sludge.dateOfDisposal);
   const saltNeedsManifest = needsManifest(num(salt.dispatch), salt.manifestNo, salt.dateOfDisposal);
-  const sludgeOverStock = dispatchExceedsStock(num(sludge.opening), num(sludge.generation), num(sludge.dispatch));
-  const saltOverStock = dispatchExceedsStock(num(salt.opening), num(salt.generation), num(salt.dispatch));
-  const closingNegative = sludgeClosing < 0 || saltClosing < 0;
 
   // Continuity: a missing immediately-previous day blocks submit unless overridden with a reason.
   const missingPriorDay = !!carry?.missingPriorDay;
@@ -347,17 +352,10 @@ export default function EtpEntryPage() {
   // Hard numeric-standard gate (≤7 int digits, ≤1 decimal, ≥0, ≤9,999,999.9) — the real
   // validator, applied to entered/prefilled values so garbage can never be persisted.
   const rangeError = (s: string) => s.trim() !== "" && !!parseDailyValue(s).error;
-  // A running balance: required (blank is never silently 0), ≤2 decimals, under MAX_BALANCE.
-  const openingError = (s: string) => {
-    if (s.trim() === "") return true;
-    const v = Number(s);
-    return !Number.isFinite(v) || v < 0 || v > MAX_BALANCE || round2(v) !== v;
-  };
   const anyOutOfRange =
     waterRows.some((r) => rangeError(waterView[r.code].initial) || rangeError(waterView[r.code].final)) ||
-    energyRows.some((r) => rangeError(energyView[r.code].initial) || rangeError(energyView[r.code].final)) ||
-    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch) ||
-    openingError(sludge.opening) || openingError(salt.opening);
+    energyRows.some((r) => rangeError(energyView[r.code].initial) || rangeError(energyView[r.code].final) || rangeError(energyCt[r.code] ?? "")) ||
+    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
 
   /**
    * Custom columns are meters now, so they get the same Initial/Final/Total treatment as water
@@ -479,10 +477,7 @@ export default function EtpEntryPage() {
     customBelowInitial ||
     customOutOfRange ||
     sludgeNeedsManifest ||
-    saltNeedsManifest ||
-    sludgeOverStock ||
-    saltOverStock ||
-    closingNegative;
+    saltNeedsManifest;
   const blocked = structuralBlocked || anyIncomplete;
   const submitBlocked = blocked || finalsMissing || continuityBlocked || !confirmed;
 
@@ -508,15 +503,10 @@ export default function EtpEntryPage() {
   const warnLevel = authorisedQuantityWarning(projectedSludge, industry?.authorisedQuantityKg);
 
   /**
-   * Whether a ledger's opening is a hand-set stock count: typed now and different from the carried
-   * closing, or - when not touched this time - whatever was already on record. Such an opening is an
-   * anchor that a later correction of an earlier day does not move.
+   * Whether a ledger's opening is a hand-set stock count (an anchor a later correction of an earlier
+   * day does not move). The daily sheet no longer edits the opening, so this is whatever is on record.
    */
-  const openingManual = (l: "sludge" | "salt", st: LedgerState): boolean => {
-    const carried = carrySource?.[l]?.closing;
-    if (!st.openingEdited) return !!existingEntry?.[l]?.openingManual;
-    return carried != null && round2(num(st.opening)) !== round2(carried);
-  };
+  const openingManual = (l: "sludge" | "salt"): boolean => !!existingEntry?.[l]?.openingManual;
 
   const buildInput = (status: EntryStatus) => ({
     industryId: industryId as string,
@@ -528,8 +518,9 @@ export default function EtpEntryPage() {
     waterRemark,
     energy: Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: num(energyView[m.code].initial), final: num(energyView[m.code].final) }])),
     energyRemark,
-    sludge: { opening: num(sludge.opening), openingManual: openingManual("sludge", sludge), generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
-    salt: { opening: num(salt.opening), openingManual: openingManual("salt", salt), generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
+    energyCtRatio: Object.fromEntries(ENERGY_METERS.flatMap((m) => (energyCt[m.code]?.trim() ? [[m.code, num(energyCt[m.code])]] : []))),
+    sludge: { opening: num(sludge.opening), openingManual: openingManual("sludge"), generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
+    salt: { opening: num(salt.opening), openingManual: openingManual("salt"), generation: num(salt.generation), dateOfDisposal: salt.dateOfDisposal, dispatch: num(salt.dispatch), manifestNo: salt.manifestNo, remark: salt.remark },
     // A column with no Final files a blank (null) and NO meter reading: storing the carried
     // Initial against an empty Final would report a fabricated - usually negative - total.
     customMeters: customColumns.length
@@ -550,25 +541,24 @@ export default function EtpEntryPage() {
   const lastLedgerEdit = existingEntry?.ledgerEdits?.filter((x) => x.kind === "edit").at(-1);
   // The existing ledger validation, applied to this section alone.
   const ledgerBlocked =
-    sludgeNeedsManifest || saltNeedsManifest || sludgeOverStock || saltOverStock || closingNegative ||
-    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch) ||
-    openingError(sludge.opening) || openingError(salt.opening);
+    sludgeNeedsManifest || saltNeedsManifest ||
+    rangeError(sludge.generation) || rangeError(sludge.dispatch) || rangeError(salt.generation) || rangeError(salt.dispatch);
 
   const onSaveLedgers = async () => {
     const expected = ledgerBase.current;
     if (!industryId || !uid || !entryDate || !existingEntry || !expected || ledgerBlocked || ledgerSaveInFlight.current) return;
     ledgerSaveInFlight.current = true;
     setSavingLedgers(true);
-    const pick = (name: "sludge" | "salt", l: LedgerState) => ({
-      opening: num(l.opening),
-      openingManual: openingManual(name, l),
+    // No opening: the daily sheet no longer edits it, so the stored opening (and whether it was set by
+    // hand) is kept exactly as it is. Generation and Remark go back unchanged from the stored day.
+    const pick = (l: LedgerState) => ({
       generation: num(l.generation),
       dispatch: num(l.dispatch),
       dateOfDisposal: l.dateOfDisposal,
       manifestNo: l.manifestNo,
       remark: l.remark,
     });
-    const res = await saveLedgers(industryId, entryDate, { sludge: pick("sludge", sludge), salt: pick("salt", salt) }, expected, uid);
+    const res = await saveLedgers(industryId, entryDate, { sludge: pick(sludge), salt: pick(salt) }, expected, uid);
     ledgerSaveInFlight.current = false;
     setSavingLedgers(false);
     if (!res.ok) {
@@ -677,7 +667,7 @@ export default function EtpEntryPage() {
         </div>
         <p className="text-xs text-muted-foreground">
           {lockWaterInitials || lockEnergyInitials
-            ? "Pick any past date — including earlier months and years. Initial readings are carried forward from the previous entry and cannot be edited; opening balances are carried forward and can be adjusted."
+            ? "Pick any past date — including earlier months and years. Initial readings are carried forward from the previous entry and cannot be edited."
             : carry?.isFirstEver
               ? "First entry — enter each meter's current reading as the Initial (baseline)."
               : "The previous day's entry is missing — Initials are prefilled from the last entry; submission needs a continuity override."}
@@ -754,6 +744,7 @@ export default function EtpEntryPage() {
             onChange={setMeter("energy")}
             readonlyInitial={(code) => !!meterCarry[meterKeyOf("energy", code)] || !!baselineFor("energy", code)}
             initialHintOf={(code) => baselineHint(baselineFor("energy", code))}
+            ctRatio={{ values: energyCt, onChange: (code, value) => setEnergyCt((s) => ({ ...s, [code]: numFilter(value) })) }}
           />
         </div>
         <RemarkField value={energyRemark} onChange={setEnergyRemark} />
@@ -763,8 +754,8 @@ export default function EtpEntryPage() {
       <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">
         <SectionTitle icon={<Trash2 className="h-4 w-4" />}>Daily Sludge &amp; MEE-Salt Ledgers (kg)</SectionTitle>
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <LedgerCard title="Daily ETP Sludge Entry" noun="Sludge" state={sludge} setState={setSludge} carriedOpening={carrySource?.sludge?.closing ?? null} closing={sludgeClosing} needsManifest={sludgeNeedsManifest} overStock={sludgeOverStock} negative={sludgeClosing < 0} />
-          <LedgerCard title="ATFD Salt (MEE Section) / PAN Salt (MEE)" noun="Salt" state={salt} setState={setSalt} carriedOpening={carrySource?.salt?.closing ?? null} closing={saltClosing} needsManifest={saltNeedsManifest} overStock={saltOverStock} negative={saltClosing < 0} authNote="Authorisation quantity not configured for MEE salt." />
+          <LedgerCard title="Daily ETP Sludge Entry" noun="Sludge" state={sludge} setState={setSludge} needsManifest={sludgeNeedsManifest} />
+          <LedgerCard title="ATFD Salt (MEE Section) / PAN Salt (MEE)" noun="Salt" state={salt} setState={setSalt} needsManifest={saltNeedsManifest} authNote="Authorisation quantity not configured for MEE salt." />
         </div>
         {usage.configured ? (
           <div className={`mt-3 rounded-xl border p-3 text-sm ${warnLevel === "exceeded" ? "border-red-500/40 bg-red-500/10 text-red-600" : warnLevel === "approaching" ? "border-amber-500/40 bg-amber-500/10 text-amber-600" : "border-border bg-muted/30 text-muted-foreground"}`}>
@@ -908,9 +899,7 @@ export default function EtpEntryPage() {
               {customBelowInitial && "A custom column's Final reading is less than its Initial reading. "}
               {customOutOfRange && "A custom column has an invalid number. "}
               {finalsMissing && "Enter a Final reading for every meter. "}
-              {(sludgeNeedsManifest || saltNeedsManifest) && "A dispatch needs a Manifest No. and a Date of disposal. "}
-              {(sludgeOverStock || saltOverStock) && "A dispatch exceeds available stock. "}
-              {closingNegative && "A closing balance is negative. "}
+              {(sludgeNeedsManifest || saltNeedsManifest) && "A disposal needs a Date of disposal and a Manifest number. "}
               {continuityBlocked && "Yesterday's entry is missing — authorise a continuity override with a reason. "}
               {!confirmed && "Tick the confirmation box below before submitting. "}
               You can still Save Draft.
@@ -975,6 +964,7 @@ function MeterTable({
   onRemove,
   initialHintOf,
   noteOf,
+  ctRatio,
 }: {
   caption: string;
   unit: string;
@@ -995,6 +985,8 @@ function MeterTable({
   initialHintOf?: (code: string) => string | undefined;
   /** A short note under a row's label (e.g. an optional meter). */
   noteOf?: (code: string) => string | undefined;
+  /** When given, each row gets a CT Ratio input - recorded only; the Total does not use it. */
+  ctRatio?: { values: Record<string, string>; onChange: (code: string, value: string) => void };
 }) {
   const rowByCode = Object.fromEntries(rows.map((r) => [r.code, r]));
   const lockOf = (code: string) => (typeof readonlyInitial === "function" ? readonlyInitial(code) : readonlyInitial);
@@ -1011,7 +1003,7 @@ function MeterTable({
         </p>
       ) : null}
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[560px] border-collapse text-sm">
+        <table className={`w-full ${ctRatio ? "min-w-[660px]" : "min-w-[560px]"} border-collapse text-sm`}>
           <thead>
             <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground">
               <th className="pb-2 pr-3 font-medium">#</th>
@@ -1024,6 +1016,7 @@ function MeterTable({
               </th>
               <th className="w-32 pb-2 pr-3 font-medium">Final Reading</th>
               <th className="w-24 pb-2 font-medium">{unitOf ? "Total" : `Total (${unit})`}</th>
+              {ctRatio ? <th className="w-28 pb-2 pl-3 font-medium">CT Ratio</th> : null}
               {onRemove ? (
                 // `relative` is load-bearing: the sr-only span is absolutely positioned, and
                 // without a positioned ancestor its containing block is the document, so it
@@ -1080,6 +1073,18 @@ function MeterTable({
                     {formatNumber(r?.total ?? 0)}
                     {unitOf ? <span className="ml-1 text-xs font-normal text-muted-foreground">{unitOf(m.code)}</span> : null}
                   </td>
+                  {ctRatio ? (
+                    <td className="py-2 pl-3">
+                      <input
+                        inputMode="decimal"
+                        aria-label={`${m.label} CT ratio`}
+                        value={ctRatio.values[m.code] ?? ""}
+                        onChange={(e) => ctRatio.onChange(m.code, e.target.value)}
+                        className={cellCls}
+                        placeholder="—"
+                      />
+                    </td>
+                  ) : null}
                   {onRemove ? (
                     <td className="py-2 text-right">
                       <Button
@@ -1122,75 +1127,35 @@ function LedgerCard({
   noun,
   state,
   setState,
-  carriedOpening,
-  closing,
   needsManifest,
-  overStock,
-  negative,
   authNote,
 }: {
   title: string;
   noun: string;
   state: LedgerState;
   setState: React.Dispatch<React.SetStateAction<LedgerState>>;
-  /** The previous day's closing this opening is normally carried from (null: nothing before it). */
-  carriedOpening: number | null;
-  closing: number;
   needsManifest: boolean;
-  overStock: boolean;
-  negative: boolean;
   authNote?: string;
 }) {
   const set = (field: keyof LedgerState, value: string) => setState((s) => ({ ...s, [field]: value }));
+  // Only the disposal is entered here. Opening, Generation, Closing and Remark are not shown: they keep
+  // their stored values (see LedgerState).
   return (
     <div className="rounded-xl border border-border bg-muted/20 p-4">
       <h4 className="font-display text-sm font-bold text-foreground">{title}</h4>
-      <p className="mt-0.5 text-xs text-muted-foreground">
-        Day-wise stock, in kg. Closing = Opening + Generation − Dispatch. The opening is carried from the previous day&apos;s closing; change it
-        to record an actual stock count.
-      </p>
+      <p className="mt-0.5 text-xs text-muted-foreground">Record a disposal: its date, the quantity in kg and the manifest number.</p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <Field label="Opening Balance in kg">
-          <input
-            inputMode="decimal"
-            aria-label={`${noun} opening balance in kg`}
-            value={state.opening}
-            onChange={(e) => setState((s) => ({ ...s, opening: balanceFilter(e.target.value), openingEdited: true }))}
-            className={`${inputCls}${state.opening.trim() === "" ? " border-red-500/70" : ""}`}
-            placeholder="0"
-          />
-        </Field>
-        <Field label={`${noun} Generation in kg`}>
-          <input inputMode="decimal" value={state.generation} onChange={(e) => set("generation", numFilter(e.target.value))} className={inputCls} placeholder="0" />
-        </Field>
         <Field label="Date of disposal">
           <input type="date" value={state.dateOfDisposal} onChange={(e) => set("dateOfDisposal", e.target.value)} className={inputCls} />
         </Field>
-        <Field label={`${noun} Dispatch / Disposal in kg`}>
+        <Field label={`${noun} disposal (kg)`}>
           <input inputMode="decimal" value={state.dispatch} onChange={(e) => set("dispatch", numFilter(e.target.value))} className={inputCls} placeholder="0" />
         </Field>
-        <Field label="Manifest No.">
+        <Field label="Manifest number">
           <input value={state.manifestNo} onChange={(e) => set("manifestNo", e.target.value)} className={inputCls} placeholder="Manifest / transporter no." />
         </Field>
-        <Field label="Closing Balance in kg (auto)">
-          <div className={`${readonlyCls}${negative ? " border-red-500/70 text-red-600" : ""}`}>{formatNumber(closing)} kg</div>
-        </Field>
       </div>
-      <div className="mt-3">
-        <Field label="Remark">
-          <input value={state.remark} onChange={(e) => set("remark", e.target.value)} className={inputCls} placeholder="Note (optional)" />
-        </Field>
-      </div>
-      {state.opening.trim() === "" ? <p className="mt-2 text-xs text-red-500">Enter the opening balance (0 if there is no stock).</p> : null}
-      {state.opening.trim() !== "" && carriedOpening != null && round2(num(state.opening)) !== round2(carriedOpening) ? (
-        <p className="mt-2 rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-700">
-          Opening differs from the previous day&apos;s closing ({formatNumber(carriedOpening)} kg) by{" "}
-          {round2(num(state.opening) - carriedOpening) > 0 ? "+" : ""}
-          {formatNumber(round2(num(state.opening) - carriedOpening))} kg. Later days carry on from this opening.
-        </p>
-      ) : null}
-      {needsManifest && <p className="mt-2 text-xs text-red-500">Dispatch requires a Manifest No. and a Date of disposal.</p>}
-      {overStock && <p className="mt-1 text-xs text-red-500">Dispatch cannot exceed Opening + Generation.</p>}
+      {needsManifest && <p className="mt-2 text-xs text-red-500">A disposal needs a Date of disposal and a Manifest number.</p>}
       {authNote && <p className="mt-2 text-xs text-muted-foreground">{authNote}</p>}
     </div>
   );
@@ -1200,7 +1165,6 @@ const cellCls =
   "h-9 w-full rounded-lg border border-border bg-background px-2 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50";
 const inputCls =
   "h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50 focus:bg-background";
-const readonlyCls = "flex h-10 items-center rounded-xl border border-border bg-muted/40 px-3 text-sm font-medium text-foreground";
 
 /**
  * Baselines in force for this day. A meter reset to 0 makes the Initial drop sharply; stating it

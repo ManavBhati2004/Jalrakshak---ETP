@@ -87,16 +87,16 @@ describe("amendLedgers — edit a filed day's Sludge & Salt", () => {
     expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ generation: 0, closing: 150 });
   });
 
-  it("refuses a change that would make a LATER day's dispatch exceed its stock, naming the day", () => {
+  it("stock is not checked: a change leaving a LATER day disposing more than its stock is saved, its closing below zero", () => {
     const es = [
       day("2026-10-01", ledger(0, 100, 0), ledger(0, 0, 0)),
       day("2026-10-02", ledger(100, 0, 90), ledger(0, 0, 0)), // dispatches 90 of the 100 carried in
     ];
-    // Cutting day 1 generation to 50 would leave only 50 in stock on day 2 against a 90 dispatch.
+    // Cutting day 1 generation to 50 leaves only 50 in stock on day 2 against a 90 dispatch.
     const r = amendLedgers(es, "IND-1", "2026-10-01", { sludge: { ...inputs(es[0].sludge!), generation: 50 }, salt: inputs(es[0].salt!) }, "op", AT);
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.error).toContain("2026-10-02");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.entries.find((e) => e.date === "2026-10-02")!.sludge).toMatchObject({ opening: 50, dispatch: 90, closing: -40 });
   });
 
   it("keeps the existing validation: dispatch needs a manifest and a disposal date", () => {
@@ -105,10 +105,20 @@ describe("amendLedgers — edit a filed day's Sludge & Salt", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("keeps the existing validation: dispatch cannot exceed opening + generation", () => {
+  it("a disposal larger than the stock on record is saved: stock is no longer checked", () => {
     const es = chain();
     const r = amendLedgers(es, "IND-1", "2026-10-03", { sludge: { ...inputs(es[2].sludge!), dispatch: 999, manifestNo: "MF", dateOfDisposal: "2026-10-03" }, salt: inputs(es[2].salt!) }, "op", AT);
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: 150, generation: 30, dispatch: 999, closing: -819 });
+  });
+
+  it("an omitted opening keeps the stored one exactly - a negative balance and a hand-set flag included", () => {
+    const es = chain().map((e) => (e.date === "2026-10-03" ? { ...e, sludge: ledger(-40, 0, 0, { openingManual: true }) } : e));
+    const r = amendLedgers(es, "IND-1", "2026-10-03", { sludge: { ...inputs(es[2].sludge!), dispatch: 10, manifestNo: "MF-9", dateOfDisposal: "2026-10-03" }, salt: inputs(es[2].salt!) }, "op", AT);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: -40, openingManual: true, dispatch: 10, closing: -50 });
   });
 
   it("rejects negative, non-finite and over-precise quantities", () => {
@@ -282,9 +292,15 @@ describe("relinkLedgers — a backfilled day joins the chain", () => {
     const before = [day("2026-10-01", ledger(0, 100, 0), ledger(0, 0, 0)), day("2026-10-03", ledger(100, 10, 0), ledger(0, 0, 0))];
     const second = day("2026-10-02", ledger(100, 40, 0), ledger(0, 0, 0));
     const r = relinkLedgers(before, [second, ...before], "IND-1", new Set([`${second.id}:sludge`, `${second.id}:salt`]));
-    if (!r.ok) throw new Error(r.error);
     expect(r.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: 140, closing: 150 });
     expect([...r.moved]).toEqual(["E-2026-10-03"]);
+  });
+
+  it("a closing below zero carries into the next day's opening with its sign", () => {
+    const before = [day("2026-10-01", ledger(0, 0, 0), ledger(0, 0, 0)), day("2026-10-02", ledger(0, 0, 0), ledger(0, 0, 0))];
+    const first = { ...before[0], sludge: ledger(0, 0, 30) }; // a disposal with nothing in stock
+    const r = relinkLedgers(before, [first, before[1]], "IND-1", new Set([`${first.id}:sludge`, `${first.id}:salt`]));
+    expect(r.entries.find((e) => e.date === "2026-10-02")!.sludge).toMatchObject({ opening: -30, closing: -30 });
   });
 });
 
@@ -306,12 +322,10 @@ describe("relinkLedgers — review fixes", () => {
     ];
     const draft = day("2026-10-02", ledger(100, 50, 0), ledger(0, 0, 0), { entryStatus: "DRAFT", status: "pending" });
     const saved = relinkLedgers(before, [draft, ...before], "IND-1", new Set([`${draft.id}:sludge`, `${draft.id}:salt`]));
-    if (!saved.ok) throw new Error(saved.error);
     expect(saved.entries.find((e) => e.date === "2026-10-03")!.sludge!.opening).toBe(100); // untouched
     // once the draft is submitted, the 3rd follows it
     const submitted = { ...draft, entryStatus: "SUBMITTED" as const };
     const after = relinkLedgers(saved.entries, saved.entries.map((e) => (e.id === draft.id ? submitted : e)), "IND-1", new Set([`${draft.id}:sludge`, `${draft.id}:salt`]));
-    if (!after.ok) throw new Error(after.error);
     expect(after.entries.find((e) => e.date === "2026-10-03")!.sludge).toMatchObject({ opening: 150, closing: 160 });
   });
 

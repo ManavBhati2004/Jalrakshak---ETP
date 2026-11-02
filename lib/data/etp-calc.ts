@@ -169,14 +169,22 @@ export function carriedMeterSource(
   return best ? { value: round2(Number(best[kind]![code].final)), fromDate: best.date } : null;
 }
 
+/**
+ * The CT ratio an energy meter last had: from the latest earlier entry, in any status, that recorded
+ * one for it - so the daily sheet can prefill it. Null when none ever did.
+ */
+export function carriedCtRatio(entries: readonly EtpEntry[], industryId: string, date: string, code: string): number | null {
+  let best: EtpEntry | undefined;
+  for (const e of entries) {
+    if (e.industryId !== industryId || e.date >= date || e.energyCtRatio?.[code] == null) continue;
+    if (!best || e.date > best.date) best = e;
+  }
+  return best ? best.energyCtRatio![code] : null;
+}
+
 /** Dispatch > 0 requires BOTH a (trimmed) Manifest No. and a Date of disposal. */
 export function dispatchNeedsManifest(dispatch: number, manifestNo: string, dateOfDisposal: string): boolean {
   return dispatch > 0 && (manifestNo.trim() === "" || dateOfDisposal.trim() === "");
-}
-
-/** Dispatch must never exceed available stock (Opening + Generation). */
-export function dispatchExceedsStock(opening: number, generation: number, dispatch: number): boolean {
-  return round2(dispatch) > round2(opening + generation);
 }
 
 /* ---------------- Date helpers (date-only, local calendar) ---------------- */

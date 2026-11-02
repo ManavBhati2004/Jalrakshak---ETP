@@ -110,6 +110,8 @@ export interface EtpEntryInput {
   waterRemark: string;
   energy: Record<string, MeterInput>;
   energyRemark: string;
+  /** CT ratio per energy meter as entered; meters left blank are absent. Recorded only, never applied. */
+  energyCtRatio?: Record<string, number>;
   sludge: LedgerInput;
   salt: LedgerInput;
   /**
@@ -301,6 +303,9 @@ export const useDataStore = create<DataState>()(
         for (const code of Object.keys(input.water)) water[code] = toMeterReading(input.water[code].initial, input.water[code].final);
         const energy: Record<string, MeterReading> = {};
         for (const code of Object.keys(input.energy)) energy[code] = toMeterReading(input.energy[code].initial, input.energy[code].final);
+        // The CT ratio is recorded alongside the readings, never applied to them.
+        const energyCtRatio: Record<string, number> = {};
+        for (const [code, v] of Object.entries(input.energyCtRatio ?? {})) if (Number.isFinite(v) && v >= 0) energyCtRatio[code] = round2(v);
 
         /**
          * Custom columns are meters too, so their daily figure is derived, never typed: the
@@ -371,6 +376,7 @@ export const useDataStore = create<DataState>()(
           waterRemark: input.waterRemark,
           energy,
           energyRemark: input.energyRemark,
+          ...(Object.keys(energyCtRatio).length ? { energyCtRatio } : {}),
           sludge,
           salt,
           ...(keptCustom ? { custom: keptCustom } : {}),
@@ -385,8 +391,7 @@ export const useDataStore = create<DataState>()(
 
         /**
          * Sludge & Salt carry forward: later days whose opening was carried from this day follow its
-         * new closing; an opening set by hand on a later day is kept. Refused - nothing written - if a
-         * later day would be left dispatching more than its stock or with a negative closing.
+         * new closing; an opening set by hand on a later day is kept.
          */
         const before = get().etpEntries;
         const linked = relinkLedgers(
@@ -395,7 +400,6 @@ export const useDataStore = create<DataState>()(
           input.industryId,
           new Set([`${id}:sludge`, `${id}:salt`]),
         );
-        if (!linked.ok) return { entry: null, alerts: [], error: linked.error };
 
         // Alerts + the Monitoring-Body approval are created only on SUBMIT (never on drafts).
         const fired: AlertType[] = [];

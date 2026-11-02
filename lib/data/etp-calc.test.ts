@@ -6,7 +6,6 @@ import {
   groupGrandTotals,
   closingBalance,
   dispatchNeedsManifest,
-  dispatchExceedsStock,
   resolveCarryForward,
   cumulativeDispatch,
   authorisedQuantityWarning,
@@ -42,6 +41,7 @@ import {
   customColumnUnit,
   meterRowStatus,
   toMeterReading,
+  carriedCtRatio,
 } from "./etp-calc";
 import type { EtpEntry, MeterIssue } from "@/lib/types";
 import { DAILY_MAX_VALUE } from "@/lib/constants";
@@ -116,8 +116,8 @@ describe("dispatch validation", () => {
   it("dispatch>0 without disposal date blocks", () => expect(dispatchNeedsManifest(10, "MF-1", "")).toBe(true));
   it("whitespace manifest does not satisfy", () => expect(dispatchNeedsManifest(10, "   ", "2026-08-14")).toBe(true));
   it("dispatch 0 without manifest/date is valid", () => expect(dispatchNeedsManifest(0, "", "")).toBe(false));
-  it("dispatch beyond stock blocks", () => expect(dispatchExceedsStock(100, 20, 130)).toBe(true));
-  it("dispatch within stock ok", () => expect(dispatchExceedsStock(100, 20, 120)).toBe(false));
+  it("a disposal beyond the stock on record is allowed: the closing simply goes below zero", () =>
+    expect(closingBalance(100, 0, 130)).toBe(-30));
 });
 
 /* ---------------- Quantity conversion ---------------- */
@@ -576,12 +576,6 @@ describe("two-decimal standard flows through the meter and ledger maths", () => 
     expect(groupGrandTotals(water).daily).toBe(3020.16);
   });
 
-  it("tightens the stock guard to the cent", () => {
-    // Was false at 1 dp: a dispatch overdrawing by under 0.05 kg used to slip through.
-    expect(dispatchExceedsStock(100, 0, 100.04)).toBe(true);
-    expect(dispatchExceedsStock(100, 0, 100)).toBe(false);
-  });
-
   it("stops truncating a 2-dp kg quantity on registration", () => {
     expect(toCanonicalKg(586.75, "KG")).toBe(586.75); // was 586.8
     expect(toCanonicalKg(15.42, "MT")).toBe(15420);
@@ -806,5 +800,21 @@ describe("RO 3rd & 4th stage meters follow the unit's registered RO capacity", (
   it("an unfiled optional meter adds nothing to the RO grand total", () => {
     const water = { RO_FEED_1_2: { initial: 0, final: 10, total: 10 }, RO_REJECT_1_2: { initial: 0, final: 2, total: 2 } };
     expect(deriveWaterFigures(water).waterTotals.ro).toBe(12);
+  });
+});
+
+describe("carriedCtRatio — prefill for the CT ratio column", () => {
+  const e = (date: string, ct?: Record<string, number>, over: Partial<EtpEntry> = {}) =>
+    ({ id: `E-${date}`, industryId: "IND-1", date, entryStatus: "DRAFT", status: "pending", ...(ct ? { energyCtRatio: ct } : {}), ...over }) as EtpEntry;
+
+  it("takes the latest earlier entry, in any status, that recorded one for that meter", () => {
+    const es = [e("2026-10-01", { ETP_POWER: 40 }), e("2026-10-03", { ETP_POWER: 50 }), e("2026-10-04"), e("2026-10-09", { ETP_POWER: 99 })];
+    expect(carriedCtRatio(es, "IND-1", "2026-10-05", "ETP_POWER")).toBe(50);
+  });
+
+  it("is null for a meter never given one, and never crosses units", () => {
+    const es = [e("2026-10-01", { ETP_POWER: 40 })];
+    expect(carriedCtRatio(es, "IND-1", "2026-10-05", "RO_POWER")).toBeNull();
+    expect(carriedCtRatio(es, "IND-2", "2026-10-05", "ETP_POWER")).toBeNull();
   });
 });

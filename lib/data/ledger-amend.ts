@@ -13,7 +13,7 @@
 
 import type { Approval, EtpEntry, HwLedger, LedgerEdit, LedgerFieldChange } from "@/lib/types";
 import { DAILY_MAX_VALUE } from "@/lib/constants";
-import { closingBalance, dispatchExceedsStock, dispatchNeedsManifest, isFiledEntry, round2, toLedger } from "@/lib/data/etp-calc";
+import { closingBalance, dispatchNeedsManifest, isFiledEntry, round2, toLedger } from "@/lib/data/etp-calc";
 
 /**
  * The operator-editable fields of one ledger. Closing is absent on purpose: it is derived.
@@ -126,9 +126,7 @@ function diffLedger(ledger: LedgerName, before: HwLedger | undefined, after: HwL
 
 const byDate = (a: EtpEntry, b: EtpEntry) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
 
-export type RelinkResult =
-  | { ok: true; entries: EtpEntry[]; moved: Set<string> }
-  | { ok: false; error: string; date: string; ledger: LedgerName; kind: "overStock" | "negative" };
+export type RelinkResult = { entries: EtpEntry[]; moved: Set<string> };
 
 /**
  * Carry the unit's Sludge & Salt balances forward after one or more of its days changed.
@@ -142,8 +140,8 @@ export type RelinkResult =
  * - otherwise moves by exactly as much as the closing it follows moved. A day that carried the
  *   previous closing keeps carrying it, and a small difference already on record (imported data)
  *   is kept rather than silently "corrected" away.
- * Every closing is recomputed from its own day. A day whose figures moved is refused rather than
- * written if its dispatch would exceed its stock or its closing go negative, naming that date.
+ * Every closing is recomputed from its own day. Stock is not checked: Generation is no longer entered
+ * on the daily sheet, so a closing may fall below zero until the Monitoring Body records generation.
  *
  * Returns `after` (order preserved) with the moved days updated, and the ids the walk moved.
  */
@@ -153,7 +151,6 @@ export function relinkLedgers(before: readonly EtpEntry[], after: readonly EtpEn
   const moved = new Set<string>();
 
   for (const l of LEDGERS) {
-    const noun = NOUN[l].toLowerCase();
     // The closing that led `date` BEFORE the change: the latest earlier FILED day's.
     const origLeaders = before.filter((e) => e.industryId === industryId && e[l] && isFiledEntry(e)).sort(byDate);
     const origPrevClosing = (date: string): number | undefined => {
@@ -181,21 +178,6 @@ export function relinkLedgers(before: readonly EtpEntry[], after: readonly EtpEn
       }
       opening = round2(opening);
       const closing = closingBalance(opening, led.generation, led.dispatch);
-      const differs = !orig || orig.opening !== opening || orig.closing !== closing || orig.generation !== led.generation || orig.dispatch !== led.dispatch;
-      if (differs) {
-        if (dispatchExceedsStock(opening, led.generation, led.dispatch)) {
-          return {
-            ok: false,
-            error: `This change would leave ${noun} dispatched on ${cur.date} exceeding the stock available that day. Correct ${cur.date} first, or reduce this change.`,
-            date: cur.date,
-            ledger: l,
-            kind: "overStock",
-          };
-        }
-        if (closing < 0) {
-          return { ok: false, error: `This change would make the ${noun} closing balance on ${cur.date} negative.`, date: cur.date, ledger: l, kind: "negative" };
-        }
-      }
       if (opening !== led.opening || closing !== led.closing) {
         updated.set(cur.id, { ...cur, [l]: { ...led, opening, closing } });
         if (!pinned.has(`${cur.id}:${l}`)) moved.add(cur.id);
@@ -204,7 +186,7 @@ export function relinkLedgers(before: readonly EtpEntry[], after: readonly EtpEn
     }
   }
   // Original array order preserved, so the slice re-serialises in the shape it was read in.
-  return { ok: true, entries: after.map((e) => updated.get(e.id) ?? e), moved };
+  return { entries: after.map((e) => updated.get(e.id) ?? e), moved };
 }
 
 /**
@@ -218,8 +200,8 @@ export function relinkLedgers(before: readonly EtpEntry[], after: readonly EtpEn
  * - Status is deliberately NOT changed: an amendment is logged in `ledgerEdits` instead, so a prior
  *   approval keeps its earlier timestamp and is never presented as approving the new figures.
  * - Idempotent: saving the same values again changes nothing and records nothing.
- * - Refuses rather than writing an inconsistent ledger: an invalid input, or any later day whose
- *   balance would go negative, rejects the whole save and names the offending date.
+ * - Refuses an invalid input (a malformed number, or a dispatch without its manifest and date).
+ *   Stock is not checked - see relinkLedgers.
  * - With `expected`, refuses if the stored day is not the version the form was loaded from.
  * - With `approvals`, stamps each audit record with the approval the day was under at the time.
  */
@@ -248,14 +230,10 @@ export function amendLedgers(
     if (err) return { ok: false, error: err };
     const opening = inp.opening ?? target[l]?.opening ?? 0;
     if (dispatchNeedsManifest(inp.dispatch, inp.manifestNo, inp.dateOfDisposal)) {
-      return { ok: false, error: `${noun} dispatch needs a Manifest No. and a Date of disposal.` };
-    }
-    if (dispatchExceedsStock(opening, inp.generation, inp.dispatch)) {
-      return { ok: false, error: `${noun} dispatch cannot exceed Opening + Generation.` };
+      return { ok: false, error: `${noun} disposal needs a Date of disposal and a Manifest number.` };
     }
     const openingManual = inp.opening !== undefined ? !!inp.openingManual : !!target[l]?.openingManual;
     const ledger = toLedger({ opening, generation: inp.generation, dispatch: inp.dispatch, dateOfDisposal: inp.dateOfDisposal, manifestNo: inp.manifestNo, remark: inp.remark, openingManual });
-    if (ledger.closing < 0) return { ok: false, error: `${noun} closing balance cannot be negative.` };
     nextTarget[l] = ledger;
     targetChanges.push(...diffLedger(l, target[l], ledger, INPUT_FIELDS));
     // Marking (or clearing) a hand-set opening is a real change even when the figure is unchanged.
@@ -287,7 +265,6 @@ export function amendLedgers(
     industryId,
     new Set([`${target.id}:sludge`, `${target.id}:salt`]),
   );
-  if (!linked.ok) return { ok: false, error: linked.error };
 
   const editedDates = [date];
   const out = linked.entries.map((e) => {

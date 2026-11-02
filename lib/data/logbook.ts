@@ -301,15 +301,11 @@ export function computeCorrections(all: readonly EtpEntry[], industryId: string,
       if (dispatchNeedsManifest(led.dispatch, led.manifestNo, led.dateOfDisposal)) {
         err(e0.date, ledgerField(l, "manifestNo"), "A dispatch needs a Manifest No. and a Date of disposal.");
       }
-      // Stock and closing are checked once the whole chain has settled (relinkLedgers): an earlier
-      // correction in the same save may raise this day's opening.
       next.set(e0.id, { ...current(e0), [l]: led });
     }
   }
   const afterLedgers = all.map((e) => next.get(e.id) ?? e);
-  const linked = relinkLedgers(all, afterLedgers, industryId, pinned);
-  if (!linked.ok) err(linked.date, ledgerField(linked.ledger, linked.kind === "overStock" ? "dispatch" : "opening"), linked.error);
-  const settled = linked.ok ? linked.entries : afterLedgers;
+  const settled = relinkLedgers(all, afterLedgers, industryId, pinned).entries;
 
   // ---- 3. collect the field changes and recompute every derived figure on changed days
   const original = new Map(all.map((e) => [e.id, e]));

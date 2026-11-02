@@ -130,7 +130,7 @@ describe("computeCorrections — Sludge & Salt", () => {
     expect(by(r, "2026-10-03").sludge!.opening).toBe(2000);
   });
 
-  it("keeps the existing ledger checks", () => {
+  it("keeps the manifest check; stock is no longer checked", () => {
     const noManifest = computeCorrections(chain(), "IND-1", { [cellKey("2026-10-02", "sludge.dispatch")]: "10" }, ctx());
     expect(noManifest.errors[0]).toMatchObject({ field: "sludge.manifestNo" });
     const overStock = computeCorrections(
@@ -139,13 +139,15 @@ describe("computeCorrections — Sludge & Salt", () => {
       { [cellKey("2026-10-02", "sludge.dispatch")]: "99999", [cellKey("2026-10-02", "sludge.manifestNo")]: "M", [cellKey("2026-10-02", "sludge.dateOfDisposal")]: "2026-10-02" },
       ctx(),
     );
-    expect(overStock.errors.some((e) => e.field === "sludge.dispatch")).toBe(true);
+    expect(overStock.errors).toEqual([]);
+    expect(by(overStock, "2026-10-02").sludge).toMatchObject({ opening: 1100, dispatch: 99999, closing: -98849 });
   });
 
-  it("refuses a correction that would break a later day, naming it", () => {
+  it("a correction that leaves a later day disposing beyond its stock is saved, that day's closing below zero", () => {
     const es = [day("2026-10-01", 100, 110, { sludge: led(1000, 100) }), day("2026-10-02", 110, 120, { sludge: led(1100, 0, 1050, { dateOfDisposal: "2026-10-02", manifestNo: "M" }) })];
     const r = computeCorrections(es, "IND-1", { [cellKey("2026-10-01", "sludge.generation")]: "0" }, ctx());
-    expect(r.errors[0].message).toContain("2026-10-02");
+    expect(r.errors).toEqual([]);
+    expect(by(r, "2026-10-02").sludge).toMatchObject({ opening: 1000, dispatch: 1050, closing: -50 });
   });
 });
 
@@ -218,7 +220,7 @@ describe("review fixes", () => {
     expect(computeCorrections(filed, "IND-1", { [cellKey("2026-10-01", RFW_F)]: "112" }, ctx()).errors[0]).toMatchObject({ date: "2026-10-02", field: RFW_F });
   });
 
-  it("checks stock only after the chain settles: a raised opening can cover a bigger dispatch", () => {
+  it("an earlier correction and a later dispatch in the same save settle together", () => {
     const r = computeCorrections(
       chain(),
       "IND-1",

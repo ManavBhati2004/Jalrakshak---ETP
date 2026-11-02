@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { initializeApp, deleteApp } from "firebase/app";
-import { createUserWithEmailAndPassword, deleteUser, signInWithEmailAndPassword, signOut, updatePassword, getAuth } from "firebase/auth";
+import { createUserWithEmailAndPassword, deleteUser, signInWithEmailAndPassword, signOut, getAuth } from "firebase/auth";
 import { doc, getDoc, setDoc, getFirestore } from "firebase/firestore";
 import { auth, db, firebaseConfig, connectEmulatorsIfEnabled } from "@/lib/firebase";
 import type { RoleId } from "@/lib/types";
@@ -159,28 +159,28 @@ export async function registerUnitWithLogin(
 }
 
 /**
- * Admin-only reset of a unit's login password. Client-only Firebase has no Admin SDK, so the
- * change goes through a reauthenticate (with the CURRENT password the admin set) + updatePassword
- * on the secondary app — the admin sets the new value, the primary session is untouched.
+ * Admin-only reset of a unit's login password - no current password needed. The browser cannot set
+ * another account's password, so the new one goes to the app's own server endpoint, which checks the
+ * caller is the Monitoring Body and that the login is this unit's (app/api/admin/unit-password).
  */
-export async function resetOperatorPassword(input: {
-  email: string;
-  currentPassword: string;
+export async function resetUnitPassword(input: {
+  industryId: string;
   newPassword: string;
-}): Promise<{ ok: true } | { ok: false; error: string }> {
-  const email = input.email.trim().toLowerCase();
-  if (input.newPassword.length < 6) return { ok: false, error: "New password must be at least 6 characters." };
+}): Promise<{ ok: true; email: string | null } | { ok: false; error: string }> {
+  const user = auth.currentUser;
+  if (!user) return { ok: false, error: "Your session has expired. Sign in again." };
   try {
-    return await withSecondaryApp(async (secAuth) => {
-      const cred = await signInWithEmailAndPassword(secAuth, email, input.currentPassword);
-      await updatePassword(cred.user, input.newPassword);
-      return { ok: true as const };
+    const token = await user.getIdToken();
+    const res = await fetch("/api/admin/unit-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(input),
     });
-  } catch (e) {
-    const code = (e as { code?: string }).code ?? "";
-    if (code === "auth/wrong-password" || code === "auth/invalid-credential") return { ok: false, error: "The current password is incorrect." };
-    if (code === "auth/user-not-found") return { ok: false, error: "No login account exists for this unit's email." };
-    return { ok: false, error: messageForCode(code) };
+    const body = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; email?: string | null } | null;
+    if (res.ok && body?.ok) return { ok: true, email: body.email ?? null };
+    return { ok: false, error: body?.error ?? "Could not change the password. Try again." };
+  } catch {
+    return { ok: false, error: "Network error — check your connection and try again." };
   }
 }
 

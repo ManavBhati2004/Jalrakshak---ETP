@@ -279,6 +279,8 @@ export interface EtpEntry {
   waterRemark?: string;
   energy?: Record<string, MeterReading>; // 3 energy meters (Kwh)
   energyRemark?: string;
+  /** CT ratio recorded per energy meter, keyed by meter code. Recorded only: totals stay Final − Initial. */
+  energyCtRatio?: Record<string, number>;
   sludge?: HwLedger; // ETP sludge (kg)
   salt?: HwLedger; // ATFD/PAN salt, MEE section (kg)
   /**
