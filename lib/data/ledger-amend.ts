@@ -11,7 +11,7 @@
    regulator's ledger sheet and monthly roll-up would stop balancing.
    ============================================================ */
 
-import type { Approval, EtpEntry, HwLedger, LedgerEdit, LedgerFieldChange } from "@/lib/types";
+import type { Approval, CorrectionChange, EtpEntry, HwLedger, LedgerEdit, LedgerFieldChange } from "@/lib/types";
 import { DAILY_MAX_VALUE } from "@/lib/constants";
 import { closingBalance, dispatchNeedsManifest, isFiledEntry, round2, toLedger } from "@/lib/data/etp-calc";
 
@@ -77,12 +77,27 @@ function approvalStamp(e: EtpEntry, approvals: readonly Approval[] | undefined):
 }
 
 /**
- * Note on a day whose balances moved because an earlier day changed. One marker per source date:
- * a newer recalculation from the same day replaces the older.
+ * Note on a day whose figures moved because an earlier day changed. One marker per source date: a
+ * newer recalculation from the same day replaces the older, but a meter's record keeps the first
+ * figure it moved from, so what the day originally held is never lost.
  */
-export function withCarriedNote(e: EtpEntry, sourceDate: string, at: string, byUid: string, approvals?: readonly Approval[]): EtpEntry {
-  const kept = (e.ledgerEdits ?? []).filter((x) => !(x.kind === "carried" && x.sourceDate === sourceDate));
-  return { ...e, ledgerEdits: capped([...kept, { at, byUid, kind: "carried", sourceDate, ...approvalStamp(e, approvals) }]) };
+export function withCarriedNote(
+  e: EtpEntry,
+  sourceDate: string,
+  at: string,
+  byUid: string,
+  approvals?: readonly Approval[],
+  meterChanges: readonly CorrectionChange[] = [],
+): EtpEntry {
+  const isThisSource = (x: LedgerEdit) => x.kind === "carried" && x.sourceDate === sourceDate;
+  const earlier = (e.ledgerEdits ?? []).find(isThisSource)?.meterChanges ?? [];
+  const merged = [
+    ...earlier.filter((c) => !meterChanges.some((m) => m.field === c.field)),
+    ...meterChanges.map((m) => ({ ...m, from: earlier.find((c) => c.field === m.field)?.from ?? m.from })),
+  ].filter((c) => c.from !== c.to);
+  const kept = (e.ledgerEdits ?? []).filter((x) => !isThisSource(x));
+  const record: LedgerEdit = { at, byUid, kind: "carried", sourceDate, ...approvalStamp(e, approvals), ...(merged.length ? { meterChanges: merged } : {}) };
+  return { ...e, ledgerEdits: capped([...kept, record]) };
 }
 
 export type AmendResult =
@@ -131,9 +146,10 @@ export type RelinkResult = { entries: EtpEntry[]; moved: Set<string> };
 /**
  * Carry the unit's Sludge & Salt balances forward after one or more of its days changed.
  *
- * `before` and `after` are the full entry lists before and after the change (same ids; `after` may
- * hold a newly saved day). Only FILED days lead the chain (`isFiledEntry`): a draft's or a rejected
- * day's figures never move another day - though its own opening does follow the days before it.
+ * `before` and `after` are the full entry lists before and after the change (same ids, except that
+ * `after` may hold a newly saved day or lack deleted ones). Only FILED days lead the chain
+ * (`isFiledEntry`): a draft's or a rejected day's figures never move another day - though its own
+ * opening does follow the days before it.
  * Walking the unit's days in date order, each day's opening:
  * - stays as given when it is in `pinned` (`<entryId>:sludge|salt`, set by this change) or was set
  *   by hand (`openingManual`) - an actual stock count is an anchor;

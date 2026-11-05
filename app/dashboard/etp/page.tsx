@@ -313,8 +313,8 @@ function EtpDetail({ ind, entries, onBack }: { ind: Industry; entries: EtpEntry[
         </div>
       </div>
 
-      {/* compliance documents — read-only for the Monitoring Body, scoped to THIS unit */}
-      <DocumentsPanel industryId={ind.id} industryName={ind.name} canUpload={false} />
+      {/* compliance documents — the Monitoring Body views them and reviews them, scoped to THIS unit */}
+      <DocumentsPanel industryId={ind.id} industryName={ind.name} canUpload={false} canReview />
 
       {/* reading history & report */}
       <div className="rounded-2xl border border-border bg-card p-4 sm:p-6">

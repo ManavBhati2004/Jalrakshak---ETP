@@ -151,6 +151,27 @@ export interface EtpDocumentMeta {
   remarkByUid?: string;
 }
 
+/** The Monitoring Body's status on a consent or authorization. */
+export type DocumentReviewStatus = "APPLIED" | "PENDING";
+export const DOCUMENT_REVIEW_STATUSES: readonly { code: DocumentReviewStatus; label: string }[] = [
+  { code: "APPLIED", label: "Applied" },
+  { code: "PENDING", label: "Pending" },
+];
+/** The slots that take a status - a Recent Notice is received, never applied for. */
+export const REVIEWED_DOCUMENT_TYPES: readonly EtpDocumentType[] = ["CTE", "CTO", "AUTHORIZATION"];
+
+/**
+ * The Monitoring Body's latest status and remark on one document. A separate record from
+ * `EtpDocumentMeta`, which the unit may rewrite: this one only the Monitoring Body can write, and it
+ * can exist before any PDF does - "Applied" often means exactly that.
+ */
+export interface EtpDocumentReview {
+  status: DocumentReviewStatus;
+  remark: string;
+  at: string; // ISO, the server's time
+  byUid: string;
+}
+
 export interface Industry {
   id: string;
   name: string;
@@ -368,6 +389,12 @@ export interface LedgerEdit {
    */
   changes?: LedgerFieldChange[];
   /**
+   * On a "carried" record: the meter Initials this day moved from and to, because `sourceDate`'s Final
+   * changed. Kept here because a re-filed day records nothing of its own, and without it an approved
+   * day's earlier Initial could not be recovered.
+   */
+  meterChanges?: CorrectionChange[];
+  /**
    * The approval this day was under when the record was made, and its stage then - read from the
    * server copy inside the saving transaction. This, not a device clock, is what tells an amendment
    * made AFTER a decision from one the decision already covered.
@@ -462,6 +489,9 @@ export interface Alert {
   createdAt: string;
   status: AlertStatus;
   relatedReadingId: string | null;
+  /** The officer behind a Monitoring-Body notice - on record, but never shown to the unit. */
+  byUid?: string;
+  byEmail?: string;
 }
 
 export type ComplianceStatus = "compliant" | "warning" | "non-compliant";

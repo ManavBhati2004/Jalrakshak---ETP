@@ -14,6 +14,7 @@ import {
   MIN_ENTRY_DATE,
   validateEntryDate,
   carriedCustomSource,
+  savedDayInitial,
   baselineAwareInitial,
   baselinesFrom,
   meterKeyOf,
@@ -214,8 +215,7 @@ export default function EtpEntryPage() {
       Object.fromEntries(
         defs.map((m) => {
           const s = saved?.[m.code];
-          // A filed Initial wins: it is what was actually recorded that day.
-          const initial = s?.initial != null ? s.initial : (meterCarry[meterKeyOf(kind, m.code)]?.value ?? null);
+          const initial = savedDayInitial(existingEntry, s?.initial, meterCarry[meterKeyOf(kind, m.code)]?.value);
           return [m.code, { initial: str(initial), final: str(s?.final) }];
         }),
       );
@@ -403,10 +403,11 @@ export default function EtpEntryPage() {
    * render, so a column created mid-session always has a state entry - the alternative (seeding
    * state in an effect) leaves a window where the table renders a column that has none.
    *
-   * Precedence: a carried Final always wins for Initial (it is derived, and the field is locked),
-   * then the operator's in-progress edit, then whatever is already filed for today so a saved
-   * draft reloads instead of coming back blank. Carried and saved values pass through numFilter
-   * so an oversized legacy reading can never seed an out-of-range value.
+   * Precedence for Initial, the same as water and energy: a Monitoring-Body baseline first; then,
+   * where the field is locked, `savedDayInitial` (a filed day keeps what it recorded, a draft follows
+   * the carry); where it is open, the operator's in-progress edit, then what is saved. Carried and
+   * saved values pass through numFilter so an oversized legacy reading can never seed an out-of-range
+   * value.
    */
   const customState: Record<string, MeterState> = useMemo(() => {
     const saved = existingEntry?.customMeters;
@@ -415,15 +416,16 @@ export default function EtpEntryPage() {
         const carried = customCarried[c.id];
         const edit = customEdits[c.id];
         const filed = saved?.[c.id];
+        const baseline = baselineOverlay[meterKeyOf("custom", c.id)];
         const initial =
           carried != null
-            ? numFilter(String(carried))
+            ? numFilter(String(baseline ? carried : savedDayInitial(existingEntry, filed?.initial, carried)))
             : (edit?.initial ?? (filed?.initial == null ? "" : numFilter(String(filed.initial))));
         const final = edit?.final ?? (filed?.final == null ? "" : numFilter(String(filed.final)));
         return [c.id, { initial, final }];
       }),
     );
-  }, [customColumns, customCarried, customEdits, existingEntry?.customMeters]);
+  }, [customColumns, customCarried, customEdits, existingEntry, baselineOverlay]);
 
   const customRows = customColumns.map((c) => ({ code: c.id, label: c.name, ...meterRowStatus(customState[c.id].initial, customState[c.id].final) }));
 
@@ -512,11 +514,15 @@ export default function EtpEntryPage() {
     industryId: industryId as string,
     date: entryDate,
     status,
+    // A meter with no Final files no reading at all: storing a blank as 0 would carry a false 0 into
+    // the next day's Initial. Submit never gets here with a required Final blank (`finalsMissing`).
     water: Object.fromEntries(
-      WATER_METERS.filter((m) => !blankOptional(m.code)).map((m) => [m.code, { initial: num(waterView[m.code].initial), final: num(waterView[m.code].final) }]),
+      WATER_METERS.filter((m) => waterView[m.code].final.trim() !== "").map((m) => [m.code, { initial: num(waterView[m.code].initial), final: num(waterView[m.code].final) }]),
     ),
     waterRemark,
-    energy: Object.fromEntries(ENERGY_METERS.map((m) => [m.code, { initial: num(energyView[m.code].initial), final: num(energyView[m.code].final) }])),
+    energy: Object.fromEntries(
+      ENERGY_METERS.filter((m) => energyView[m.code].final.trim() !== "").map((m) => [m.code, { initial: num(energyView[m.code].initial), final: num(energyView[m.code].final) }]),
+    ),
     energyRemark,
     energyCtRatio: Object.fromEntries(ENERGY_METERS.flatMap((m) => (energyCt[m.code]?.trim() ? [[m.code, num(energyCt[m.code])]] : []))),
     sludge: { opening: num(sludge.opening), openingManual: openingManual("sludge"), generation: num(sludge.generation), dateOfDisposal: sludge.dateOfDisposal, dispatch: num(sludge.dispatch), manifestNo: sludge.manifestNo, remark: sludge.remark },
@@ -532,6 +538,7 @@ export default function EtpEntryPage() {
         )
       : undefined,
     overrideReason: missingPriorDay && override ? overrideReason.trim() : undefined,
+    baselines,
   });
 
   // ---- Sludge & Salt: editable and savable at any time on a filed day ----
@@ -575,6 +582,9 @@ export default function EtpEntryPage() {
     });
   };
 
+  // A corrected Final is the next day's Initial, so that day moved with this save: say so.
+  const followedNote = (dates?: string[]) => (dates?.length ? ` Initial readings followed on ${dates.map((d) => formatDate(d)).join(", ")}.` : "");
+
   const onSaveDraft = () => {
     if (!industryId || !issuesLoaded) return;
     if (entrySubmitted) {
@@ -585,25 +595,25 @@ export default function EtpEntryPage() {
       toast.error("Fix the highlighted fields before saving a draft");
       return;
     }
-    const { entry, error } = submitEtpEntry(buildInput("DRAFT"));
+    const { entry, error, followed } = submitEtpEntry(buildInput("DRAFT"));
     if (error || !entry) {
       toast.error(error ?? "Could not save the entry");
       return;
     }
-    toast.success("Draft saved", { description: "Your partial entry is saved. It is not sent for verification or counted in reports." });
+    toast.success("Draft saved", { description: `Your partial entry is saved. It is not sent for verification or counted in reports.${followedNote(followed)}` });
     setSuccess({ entry, status: "DRAFT" });
   };
 
   const onSubmit = () => {
     if (!industryId || submitBlocked || !issuesLoaded) return;
-    const { entry, alerts, error } = submitEtpEntry(buildInput("SUBMITTED"));
+    const { entry, alerts, error, followed } = submitEtpEntry(buildInput("SUBMITTED"));
     if (error || !entry) {
       toast.error(error ?? "Could not submit the entry");
       return;
     }
     const totalWater = round2((entry.waterTotals?.daily ?? 0) + (entry.waterTotals?.ro ?? 0) + (entry.waterTotals?.mee ?? 0));
     toast.success("Daily entry submitted", {
-      description: `Water total ${formatNumber(totalWater)} m³ · sent for verification${alerts.length ? ` · ${alerts.length} alert(s)` : ""}.`,
+      description: `Water total ${formatNumber(totalWater)} m³ · sent for verification${alerts.length ? ` · ${alerts.length} alert(s)` : ""}.${followedNote(followed)}`,
     });
     setSuccess({ entry, status: "SUBMITTED" });
     setConfirmed(false); // a correction to this day must be confirmed again

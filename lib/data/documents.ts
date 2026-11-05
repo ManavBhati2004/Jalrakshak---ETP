@@ -18,9 +18,9 @@
    permission-denied.
    ============================================================ */
 
-import { Bytes, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, writeBatch, type Unsubscribe } from "firebase/firestore";
-import { db } from "@/lib/firebase";
-import type { EtpDocumentMeta, EtpDocumentType } from "@/lib/types";
+import { Bytes, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, serverTimestamp, setDoc, Timestamp, writeBatch, type Unsubscribe } from "firebase/firestore";
+import { auth, db } from "@/lib/firebase";
+import { REVIEWED_DOCUMENT_TYPES, type DocumentReviewStatus, type EtpDocumentMeta, type EtpDocumentReview, type EtpDocumentType } from "@/lib/types";
 import { CHUNK_BYTES, checkPdfName, formatBytes, hasPdfMagic, joinChunks, planBatches, splitChunks, MAX_DOCUMENT_BYTES } from "@/lib/data/document-chunks";
 
 export { formatBytes, splitChunks, joinChunks, MAX_DOCUMENT_BYTES };
@@ -33,6 +33,7 @@ export const MAX_REMARK_CHARS = 500;
 
 const metaRef = (industryId: string, docType: EtpDocumentType) => doc(db, "industries", industryId, "docs", docType);
 const chunksCol = (industryId: string, docType: EtpDocumentType) => collection(db, "industries", industryId, "docs", docType, "chunks");
+const reviewsCol = (industryId: string) => collection(db, "industries", industryId, "docReviews");
 
 /**
  * Validate before touching the network. Checks extension, MIME and the actual `%PDF`
@@ -172,8 +173,12 @@ export async function listDocuments(industryId: string): Promise<Partial<Record<
   return out;
 }
 
-/** Live view of a unit's documents. */
-export function subscribeDocuments(industryId: string, onData: (docs: Partial<Record<EtpDocumentType, EtpDocumentMeta>>) => void): Unsubscribe {
+/** Live view of a unit's documents. `onError` fires if they cannot be read at all. */
+export function subscribeDocuments(
+  industryId: string,
+  onData: (docs: Partial<Record<EtpDocumentType, EtpDocumentMeta>>) => void,
+  onError: () => void,
+): Unsubscribe {
   return onSnapshot(
     collection(db, "industries", industryId, "docs"),
     (snap) => {
@@ -184,8 +189,51 @@ export function subscribeDocuments(industryId: string, onData: (docs: Partial<Re
       });
       onData(out);
     },
+    onError,
+  );
+}
+
+/** Live view of the Monitoring Body's status and remark on a unit's documents. */
+export function subscribeDocumentReviews(industryId: string, onData: (reviews: Partial<Record<EtpDocumentType, EtpDocumentReview>>) => void): Unsubscribe {
+  return onSnapshot(
+    reviewsCol(industryId),
+    (snap) => {
+      const out: Partial<Record<EtpDocumentType, EtpDocumentReview>> = {};
+      snap.forEach((d) => {
+        const r = d.data({ serverTimestamps: "estimate" });
+        out[d.id as EtpDocumentType] = { status: r.status, remark: r.remark, byUid: r.byUid, at: r.at instanceof Timestamp ? r.at.toDate().toISOString() : "" };
+      });
+      onData(out);
+    },
     () => onData({}),
   );
+}
+
+/** Set the Monitoring Body's latest status and remark on one document. */
+export async function saveDocumentReview(
+  industryId: string,
+  docType: EtpDocumentType,
+  status: DocumentReviewStatus,
+  remark: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const user = auth.currentUser;
+  if (!user) return { ok: false, error: "Your session has expired. Sign in again." };
+  try {
+    await setDoc(doc(reviewsCol(industryId), docType), { status, remark: remark.trim().slice(0, MAX_REMARK_CHARS), at: serverTimestamp(), byUid: user.uid });
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Could not save. Check your connection and try again." };
+  }
+}
+
+/** Remove a unit's reviews, along with the unit itself. */
+export async function deleteDocumentReviews(industryId: string): Promise<boolean> {
+  try {
+    await Promise.all(REVIEWED_DOCUMENT_TYPES.map((t) => deleteDoc(doc(reviewsCol(industryId), t))));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Fetch and reassemble a stored PDF. Returns null when absent or unreadable. */
@@ -232,16 +280,19 @@ export async function deleteDocument(industryId: string, docType: EtpDocumentTyp
 }
 
 /**
- * Open in a new tab (view) or save to disk (download). Mirrors the download helper in
+ * Show in `tab` (view) or save to disk (download). Mirrors the download helper in
  * `excel-export.ts` — body-append before click and a delayed revoke, which the older
  * CSV helpers get wrong.
+ *
+ * `tab` is opened by the caller on the click itself: a popup blocker allows that, but not a tab
+ * opened once the file has loaded. Without one (blocked) a view falls back to a download, so the
+ * click is never silently lost.
  */
-export function presentBlob(blob: Blob, filename: string, mode: "view" | "download") {
+export function presentBlob(blob: Blob, filename: string, tab: Window | null) {
   const url = URL.createObjectURL(blob);
-  if (mode === "view") {
-    const w = window.open(url, "_blank", "noopener,noreferrer");
-    // Popup blocked → fall back to a download so the click is never silently lost.
-    if (!w) presentBlob(blob, filename, "download");
+  if (tab) {
+    tab.opener = null;
+    tab.location.href = url;
   } else {
     const a = document.createElement("a");
     a.href = url;

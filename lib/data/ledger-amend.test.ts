@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { amendLedgers, relinkLedgers, MAX_CARRIED_RECORDS, MAX_EDIT_RECORDS, type LedgerExpectation, type LedgerInputs } from "./ledger-amend";
+import { amendLedgers, relinkLedgers, withCarriedNote, MAX_CARRIED_RECORDS, MAX_EDIT_RECORDS, type LedgerExpectation, type LedgerInputs } from "./ledger-amend";
 import type { Approval, EtpEntry, HwLedger, LedgerEdit } from "@/lib/types";
 
 const ledger = (opening: number, generation: number, dispatch: number, extra: Partial<HwLedger> = {}): HwLedger => ({
@@ -341,5 +341,25 @@ describe("relinkLedgers — review fixes", () => {
     const r = amendLedgers(es, "IND-1", "2026-10-02", { sludge: { ...inputs(es[1].sludge!), opening: 12345678.5, openingManual: true }, salt: inputs(es[1].salt!) }, "op", AT);
     if (!r.ok) throw new Error(r.error);
     expect(r.entries.find((e) => e.date === "2026-10-02")!.sludge).toMatchObject({ opening: 12345678.5, openingManual: true });
+  });
+});
+
+describe("withCarriedNote — a day moved by an earlier day", () => {
+  const F = "water.RAW_FRESH_WATER.initial";
+  const noted = (e: EtpEntry) => e.ledgerEdits!.filter((x) => x.kind === "carried");
+
+  it("records the meter figures, and keeps the first one across repeated changes from one day", () => {
+    const d = day("2026-10-02", ledger(0, 0, 0), ledger(0, 0, 0));
+    const once = withCarriedNote(d, "2026-10-01", AT, "op", undefined, [{ field: F, from: 110, to: 112 }]);
+    const twice = withCarriedNote(once, "2026-10-01", AT, "op", undefined, [{ field: F, from: 112, to: 115 }]);
+    expect(noted(twice)).toHaveLength(1);
+    expect(noted(twice)[0].meterChanges).toEqual([{ field: F, from: 110, to: 115 }]);
+  });
+
+  it("a later ledger-only recalculation keeps the meter record; moving back to the start drops it", () => {
+    const d = day("2026-10-02", ledger(0, 0, 0), ledger(0, 0, 0));
+    const once = withCarriedNote(d, "2026-10-01", AT, "op", undefined, [{ field: F, from: 110, to: 112 }]);
+    expect(noted(withCarriedNote(once, "2026-10-01", AT, "op"))[0].meterChanges).toEqual([{ field: F, from: 110, to: 112 }]);
+    expect(noted(withCarriedNote(once, "2026-10-01", AT, "op", undefined, [{ field: F, from: 112, to: 110 }]))[0].meterChanges).toBeUndefined();
   });
 });

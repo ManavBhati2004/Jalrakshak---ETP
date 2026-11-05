@@ -130,6 +130,24 @@ service cloud.firestore {
       allow write: if isAdmin() || ownsIndustry(industryId);
     }
 
+    // ---- The Monitoring Body's review of a consent or authorization ------------
+    // Its latest status and remark. The unit reads it; only the Monitoring Body writes it. Kept
+    // apart from the document's own metadata above, which the unit may rewrite freely and which a
+    // re-upload replaces, so neither can touch it or forge it.
+    match /industries/{industryId}/docReviews/{docType} {
+      allow read: if isAdmin() || ownsIndustry(industryId);
+      allow create, update: if isAdmin()
+                    && docType in ['CTE', 'CTO', 'AUTHORIZATION']
+                    && request.resource.data.keys().hasAll(['status', 'remark', 'at', 'byUid'])
+                    && request.resource.data.keys().hasOnly(['status', 'remark', 'at', 'byUid'])
+                    && request.resource.data.status in ['APPLIED', 'PENDING']
+                    && request.resource.data.remark is string
+                    && request.resource.data.remark.size() <= 500
+                    && request.resource.data.at == request.time
+                    && request.resource.data.byUid == request.auth.uid;
+      allow delete: if isAdmin();
+    }
+
     // ---- Meter issues & baselines -------------------------------------------
     // An operator reports a faulty meter; the Monitoring Body resolves it by setting that meter's
     // new baseline. Kept OUT of the tenant's `json` blob on purpose: rules cannot inspect inside

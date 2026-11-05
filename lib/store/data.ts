@@ -28,8 +28,9 @@ import {
   buildEtpApprovals,
 } from "@/lib/data/seed";
 import { ALERT_META, complianceStatus, WATER_METERS, ENERGY_METERS } from "@/lib/constants";
-import { toMeterReading, toLedger, round2, validateEntryDate, localDateString, deriveWaterFigures } from "@/lib/data/etp-calc";
+import { toMeterReading, toLedger, round2, validateEntryDate, localDateString, deriveWaterFigures, type MeterBaseline } from "@/lib/data/etp-calc";
 import { relinkLedgers, withCarriedNote } from "@/lib/data/ledger-amend";
+import { relinkMeters } from "@/lib/data/logbook";
 import { decidedApproval } from "@/lib/data/approval-decisions";
 
 export interface ReadingInput {
@@ -120,6 +121,8 @@ export interface EtpEntryInput {
    */
   customMeters?: Record<string, MeterInput | null>;
   overrideReason?: string; // reason recorded when a missing-prior-day continuity override was authorised
+  /** The unit's meter baselines, so a later day past a reset is not moved by this save. */
+  baselines?: readonly MeterBaseline[];
 }
 
 /** Result of adding an operator-defined Daily ETP Entry column. */
@@ -133,8 +136,11 @@ interface DataState {
   alerts: Alert[];
   compliance: ComplianceRecord[];
   submitReading: (input: ReadingInput) => { reading: FlowMeterReading; alerts: AlertType[] };
-  /** On a bad entry date nothing is written: `error` is set and `entry` is null. */
-  submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry | null; alerts: AlertType[]; error?: string };
+  /**
+   * On a bad entry date, or when a later day's readings could not follow, nothing is written: `error`
+   * is set and `entry` is null. `followed` lists the later days whose Initial moved with this save.
+   */
+  submitEtpEntry: (input: EtpEntryInput) => { entry: EtpEntry | null; alerts: AlertType[]; error?: string; followed?: string[] };
   raiseEtpInletAlert: (industryId: string, etpInlet: number) => void;
   raiseTamperAlert: (industryId: string, clientISO: string, serverISO: string, driftMinutes: number) => void;
   /** Returns the created alert's id. `id` lets a caller pre-assign it (a meter issue records it). */
@@ -400,6 +406,9 @@ export const useDataStore = create<DataState>()(
           input.industryId,
           new Set([`${id}:sludge`, `${id}:salt`]),
         );
+        // The meters likewise: this day's Final is the next day's Initial, so that day follows.
+        const relinked = relinkMeters(before, linked.entries, input.industryId, input.date, { industry: ind ?? {}, baselines: input.baselines ?? [] });
+        if (!relinked.ok) return { entry: null, alerts: [], error: relinked.error };
 
         // Alerts + the Monitoring-Body approval are created only on SUBMIT (never on drafts).
         const fired: AlertType[] = [];
@@ -449,12 +458,18 @@ export const useDataStore = create<DataState>()(
           : null;
 
         set((s) => {
-          const etpEntries = linked.entries.map((e) =>
-            linked.moved.has(e.id) ? withCarriedNote(e, input.date, submittedAt, syncContext.uid ?? "", s.approvals) : e,
+          const etpEntries = relinked.entries.map((e) =>
+            linked.moved.has(e.id) || relinked.moved.has(e.id)
+              ? withCarriedNote(e, input.date, submittedAt, syncContext.uid ?? "", s.approvals, relinked.moved.get(e.id))
+              : e,
           );
-          const approvals = approval
-            ? [approval, ...s.approvals.filter((a) => a.readingId !== id)]
-            : s.approvals.filter((a) => a.readingId !== id);
+          // The approval card's figure is the day's total intake - keep a followed day's in step.
+          const followed = new Map(etpEntries.filter((e) => relinked.moved.has(e.id)).map((e) => [e.id, e]));
+          const others = s.approvals.filter((a) => a.readingId !== id).map((a) => {
+            const e = followed.get(a.readingId);
+            return e && a.difference !== e.totalWaterIntake ? { ...a, difference: e.totalWaterIntake } : a;
+          });
+          const approvals = approval ? [approval, ...others] : others;
           // Drop this reading's prior alerts before adding the fresh ones (no duplicate/colliding
           // ids or unbounded accumulation on re-submit).
           const alerts = [...newAlerts, ...s.alerts.filter((a) => a.relatedReadingId !== id)];
@@ -474,7 +489,8 @@ export const useDataStore = create<DataState>()(
           };
         });
 
-        return { entry, alerts: fired };
+        const followed = relinked.entries.filter((e) => relinked.moved.has(e.id)).map((e) => e.date);
+        return { entry, alerts: fired, followed };
       },
 
       // Fired from the ETP entry form when ETP Inlet exceeds the sanctioned ETP

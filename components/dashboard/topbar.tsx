@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Menu, Search, Bell, LogOut, ChevronDown, UserCog } from "lucide-react";
+import { Menu, Search, Bell, LogOut, ChevronDown, UserCog, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger, SheetTitle } from "@/components/ui/sheet";
 import {
@@ -99,6 +99,12 @@ export function Topbar() {
               <p className="text-xs font-normal text-muted-foreground">{admin ? roleMeta.scope : company?.area ?? roleMeta.scope}</p>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link href="/dashboard/profile">
+                <UserRound className="h-4 w-4" />
+                My profile
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link href="/login">
                 <UserCog className="h-4 w-4" />

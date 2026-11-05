@@ -50,6 +50,7 @@ export const DASHBOARD_NAV: NavItem[] = [
   { label: "Industries", href: "/dashboard/industries", icon: "Factory", group: "Monitoring", roles: ADMIN },
   { label: "ETP Units", href: "/dashboard/etp", icon: "Droplets", group: "Monitoring", roles: ADMIN },
   { label: "Logbook", href: "/dashboard/logbook", icon: "BookOpenCheck", group: "Monitoring", roles: ADMIN },
+  { label: "Documents", href: "/dashboard/documents", icon: "FileText", group: "Monitoring", roles: ADMIN },
   { label: "Approvals", href: "/dashboard/approvals", icon: "CheckCircle2", group: "Governance", roles: ADMIN },
   { label: "Compliance", href: "/dashboard/compliance", icon: "ShieldCheck", group: "Governance", roles: ADMIN },
   { label: "Monthly Return", href: "/dashboard/monthly-return", icon: "FileSpreadsheet", group: "Governance", roles: ADMIN },
@@ -65,6 +66,7 @@ export const ADMIN_ONLY_PATHS = [
   "/dashboard/compliance",
   "/dashboard/reports",
   "/dashboard/logbook",
+  "/dashboard/documents",
 ];
 export const ETP_ONLY_PATHS = ["/dashboard/etp-entry", "/dashboard/help"];
 

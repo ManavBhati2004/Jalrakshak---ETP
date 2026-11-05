@@ -42,6 +42,9 @@ import {
   meterRowStatus,
   toMeterReading,
   carriedCtRatio,
+  carriedMeterSource,
+  isRealReading,
+  savedDayInitial,
 } from "./etp-calc";
 import type { EtpEntry, MeterIssue } from "@/lib/types";
 import { DAILY_MAX_VALUE } from "@/lib/constants";
@@ -177,6 +180,31 @@ describe("resolveCarryForward — immediately-previous day only", () => {
 });
 
 /* ---------------- Authorisation usage ---------------- */
+describe("savedDayInitial — the Initial a saved day shows", () => {
+  const filed = { entryStatus: "SUBMITTED" } as const;
+  const draft = { entryStatus: "DRAFT" } as const;
+
+  it("keeps what a filed day recorded, even where the carry now differs", () => {
+    expect(savedDayInitial(filed, 120, 150)).toBe(120);
+  });
+  it("a draft follows the carry, so a stale copy is never locked in and filed", () => {
+    expect(savedDayInitial(draft, 120, 150)).toBe(150);
+    expect(savedDayInitial(draft, 0, 150)).toBe(150); // the false 0 an old blank Final left behind
+  });
+  it("keeps a first reading typed with nothing to carry from", () => {
+    expect(savedDayInitial(draft, 100, null)).toBe(100);
+    expect(savedDayInitial(draft, 100, undefined)).toBe(100);
+  });
+  it("a legacy entry with no status counts as filed", () => {
+    expect(savedDayInitial({ entryStatus: undefined }, 120, 150)).toBe(120);
+  });
+  it("a day with nothing saved takes the carry, or nothing", () => {
+    expect(savedDayInitial(undefined, undefined, 150)).toBe(150);
+    expect(savedDayInitial(undefined, undefined, undefined)).toBeNull();
+    expect(savedDayInitial(draft, null, 150)).toBe(150);
+  });
+});
+
 describe("cumulativeDispatch + warning", () => {
   const entries = [
     mkEntry("IND-1", "2026-08-10", 5000),
@@ -398,9 +426,9 @@ describe("carriedCustomFinal — per-column carry-forward baseline", () => {
     expect(carriedCustomFinal(entries, "IND-1", "2026-07-10", "CC-A")).toBeNull();
   });
 
-  it("ignores drafts and rejected entries", () => {
-    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { entryStatus: "DRAFT" })], "IND-1", "2026-07-10", "CC-A")).toBeNull();
-    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { status: "rejected" })], "IND-1", "2026-07-10", "CC-A")).toBeNull();
+  it("carries from a draft or rejected day too, exactly as water and energy do", () => {
+    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { entryStatus: "DRAFT" })], "IND-1", "2026-07-10", "CC-A")).toBe(80);
+    expect(carriedCustomFinal([withMeter("2026-07-09", 80, { status: "rejected" })], "IND-1", "2026-07-10", "CC-A")).toBe(80);
   });
 
   it("never reads another unit's entries, or today's, or the future", () => {
@@ -816,5 +844,38 @@ describe("carriedCtRatio — prefill for the CT ratio column", () => {
     const es = [e("2026-10-01", { ETP_POWER: 40 })];
     expect(carriedCtRatio(es, "IND-1", "2026-10-05", "RO_POWER")).toBeNull();
     expect(carriedCtRatio(es, "IND-2", "2026-10-05", "ETP_POWER")).toBeNull();
+  });
+});
+
+describe("carriedMeterSource — one carry rule for every meter", () => {
+  const e = (date: string, final: number, over: Partial<EtpEntry> = {}) =>
+    ({
+      id: `E-${date}`, industryId: "IND-1", date, status: "approved", entryStatus: "SUBMITTED",
+      water: { M: { initial: 0, final, total: final } }, energy: { M: { initial: 0, final, total: final } }, customMeters: { M: { initial: 0, final, total: final } },
+      ...over,
+    }) as EtpEntry;
+
+  it("takes the latest earlier reading in any status, for water, energy and custom alike", () => {
+    const es = [e("2026-10-01", 10), e("2026-10-02", 20, { entryStatus: "DRAFT", status: "pending" }), e("2026-10-09", 99)];
+    for (const kind of ["water", "energy", "custom"] as const) {
+      expect(carriedMeterSource(es, "IND-1", "2026-10-05", kind, "M")).toEqual({ value: 20, fromDate: "2026-10-02" });
+    }
+  });
+
+  it("passes over a blank saved as 0 by an old draft, and over a day with no reading", () => {
+    const es = [e("2026-10-01", 150), e("2026-10-02", 0, { entryStatus: "DRAFT", status: "pending" }), e("2026-10-03", 5, { water: {} })];
+    expect(carriedMeterSource(es, "IND-1", "2026-10-05", "water", "M")).toEqual({ value: 150, fromDate: "2026-10-01" });
+  });
+
+  it("a filed reading of 0 is real - a reset meter's first day, say", () => {
+    expect(carriedMeterSource([e("2026-10-01", 0)], "IND-1", "2026-10-02", "water", "M")).toEqual({ value: 0, fromDate: "2026-10-01" });
+    expect(isRealReading({ entryStatus: "SUBMITTED" }, { initial: 0, final: 0, total: 0 })).toBe(true);
+    expect(isRealReading({ entryStatus: "DRAFT" }, { initial: 10, final: 0, total: -10 })).toBe(false);
+    expect(isRealReading({ entryStatus: "DRAFT" }, undefined)).toBe(false);
+  });
+
+  it("the latest reading on record passes over the same blank", () => {
+    const es = [e("2026-10-01", 150), e("2026-10-02", 0, { entryStatus: "DRAFT", status: "pending" })];
+    expect(latestMeterReading(es, "IND-1", "water:M")).toEqual({ value: 150, date: "2026-10-01" });
   });
 });

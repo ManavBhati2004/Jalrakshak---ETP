@@ -158,6 +158,26 @@ export async function registerUnitWithLogin(
   }
 }
 
+/** The signed-in user's name from their own `users/{uid}` profile ("" if none is on record). */
+export async function loadProfileName(uid: string): Promise<string> {
+  try {
+    const snap = await getDoc(doc(db, "users", uid));
+    return (snap.data()?.name as string | undefined) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** Save the signed-in user's own name. Only `name` is sent, so role and unit link stay as they are. */
+export async function saveProfileName(uid: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await setDoc(doc(db, "users", uid), { name: name.trim() }, { merge: true });
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Could not save. Check your connection and try again." };
+  }
+}
+
 /**
  * Admin-only reset of a unit's login password - no current password needed. The browser cannot set
  * another account's password, so the new one goes to the app's own server endpoint, which checks the

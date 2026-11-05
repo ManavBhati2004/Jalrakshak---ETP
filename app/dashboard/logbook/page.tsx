@@ -1,8 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { LogbookSheet } from "@/components/dashboard/logbook-sheet";
+import { LogbookDeleteDialog } from "@/components/dashboard/logbook-delete-dialog";
+import { Button } from "@/components/ui/button";
 import { useDataStore } from "@/lib/store/data";
 import { useHydrated } from "@/lib/hooks/use-hydrated";
 
@@ -23,6 +26,9 @@ export default function LogbookPage() {
   const hydrated = useHydrated();
   const [sel, setSel] = useState("");
   const [picked, setPicked] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  // Bumped after a delete, so the sheet starts clean rather than holding edits to days now gone.
+  const [deletions, setDeletions] = useState(0);
   // The default month is read after mount, so the server render and the first client render agree.
   const month = picked || (hydrated ? thisMonth() : "");
   const industry = industries.find((i) => i.id === (sel || etpUnits[0]?.id));
@@ -65,11 +71,31 @@ export default function LogbookPage() {
             className="h-10 w-full rounded-xl border border-border bg-muted/30 px-3 text-sm sm:w-48"
           />
         </div>
+        <Button
+          variant="outline"
+          disabled={!industry || !month}
+          onClick={() => setDeleting(true)}
+          className="h-10 shrink-0 gap-1.5 rounded-xl border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-600"
+        >
+          <Trash2 className="h-4 w-4" /> Delete records
+        </Button>
       </div>
+
+      {deleting && industry ? (
+        <LogbookDeleteDialog
+          industry={industry}
+          defaultMonth={month}
+          onClose={() => setDeleting(false)}
+          onDeleted={() => {
+            setDeleting(false);
+            setDeletions((n) => n + 1);
+          }}
+        />
+      ) : null}
 
       {industry && month ? (
         // Keyed so switching unit or month starts from a clean sheet with no carried-over edits.
-        <LogbookSheet key={`${industry.id}|${month}`} industry={industry} month={month} />
+        <LogbookSheet key={`${industry.id}|${month}|${deletions}`} industry={industry} month={month} />
       ) : (
         <p className="text-sm text-muted-foreground">{etpUnits.length ? "Loading…" : "No ETP units registered."}</p>
       )}

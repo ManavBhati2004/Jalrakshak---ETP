@@ -148,25 +148,47 @@ export function isFiledEntry(e: Pick<EtpEntry, "entryStatus" | "status">): boole
 }
 
 /**
- * The Final to carry into a water or energy meter's Initial on `date`: the latest earlier entry (in
- * any status, like the form's carry source) that recorded THAT meter. Per meter, because a meter can
- * be left blank on a day - an optional RO 3rd & 4th stage meter, say - and the next reading must
+ * Whether a stored reading is a real meter position. Drafts used to store a blank Final as 0, so a
+ * draft's Final of exactly 0 is a blank, not a reading - it must never carry into the next Initial.
+ * New drafts simply leave such a row out.
+ */
+export function isRealReading(e: Pick<EtpEntry, "entryStatus">, r: MeterReading | undefined): r is MeterReading {
+  return r?.final != null && !(e.entryStatus === "DRAFT" && Number(r.final) === 0);
+}
+
+/**
+ * The Initial the form shows for a meter on a saved day. A filed day keeps what it recorded: that is
+ * the record, and replacing it here would silently change the day's total. A draft has recorded
+ * nothing yet, so it follows the carry: an older draft can hold a stale copy, which must not be locked
+ * in and then filed. With nothing to carry from, the Initial typed for a first reading stays.
+ */
+export function savedDayInitial(entry: Pick<EtpEntry, "entryStatus"> | undefined, stored: number | null | undefined, carried: number | null | undefined): number | null {
+  if (stored == null) return carried ?? null;
+  return entry?.entryStatus === "DRAFT" && carried != null ? carried : stored;
+}
+
+/**
+ * The Final to carry into a meter's Initial on `date`: the latest earlier entry (in any status, like
+ * the form's carry source) that recorded THAT meter. Per meter, because a meter can be left blank on
+ * a day - an optional RO 3rd & 4th stage meter, or a custom column, say - and the next reading must
  * still continue from its last real reading, never from 0. Null when the meter was never read.
  */
 export function carriedMeterSource(
   entries: readonly EtpEntry[],
   industryId: string,
   date: string,
-  kind: "water" | "energy",
+  kind: "water" | "energy" | "custom",
   code: string,
 ): { value: number; fromDate: string } | null {
-  let best: EtpEntry | undefined;
+  const key = meterKeyOf(kind, code);
+  let best: { value: number; fromDate: string } | null = null;
   for (const e of entries) {
     if (e.industryId !== industryId || e.date >= date) continue;
-    if (e[kind]?.[code]?.final == null) continue;
-    if (!best || e.date > best.date) best = e;
+    const r = readingFor(e, key);
+    if (!isRealReading(e, r)) continue;
+    if (!best || e.date > best.fromDate) best = { value: round2(Number(r.final)), fromDate: e.date };
   }
-  return best ? { value: round2(Number(best[kind]![code].final)), fromDate: best.date } : null;
+  return best;
 }
 
 /**
@@ -296,9 +318,8 @@ export function entryCustomReading(entry: EtpEntry, columnId: string): MeterRead
 /**
  * The Final to carry into today's Initial for one custom column, or null when there is none.
  *
- * Deliberately NOT `mostRecentPrior`: that helper keeps drafts and rejected entries, so a
- * draft's Final could become tomorrow's LOCKED Initial. It also scans per column rather than
- * per entry, because a column left blank files no reading at all — gaps are normal, and the
+ * A custom column is a meter like any other, so it carries exactly as water and energy do: from any
+ * status, per column, because a column left blank files no reading at all - gaps are normal, and the
  * baseline is the last day that actually recorded this meter.
  *
  * A legacy scalar is never a carry source: it is a daily quantity, not a meter position, so
@@ -310,18 +331,7 @@ export function carriedCustomFinal(entries: EtpEntry[], industryId: string, date
 
 /** As `carriedCustomFinal`, but also says which day the value came from (needed for baselines). */
 export function carriedCustomSource(entries: EtpEntry[], industryId: string, date: string, columnId: string): { value: number; fromDate: string } | null {
-  const prior = entries
-    .filter(
-      (e) =>
-        e.industryId === industryId &&
-        e.date < date &&
-        e.entryStatus !== "DRAFT" &&
-        e.status !== "rejected" &&
-        e.customMeters?.[columnId]?.final != null,
-    )
-    .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
-  const v = prior?.customMeters?.[columnId]?.final;
-  return v == null || !prior ? null : { value: round2(Number(v)), fromDate: prior.date };
+  return carriedMeterSource(entries, industryId, date, "custom", columnId);
 }
 
 /* ---------------- Meter baselines (reset / resume by the Monitoring Body) ----------------
@@ -440,7 +450,7 @@ export function latestMeterReading(entries: readonly EtpEntry[], industryId: str
   for (const e of entries) {
     if (e.industryId !== industryId) continue;
     const r = readingFor(e, meterKey);
-    if (r?.final == null) continue;
+    if (!isRealReading(e, r)) continue;
     if (!best || e.date > best.date) best = { value: round2(Number(r.final)), date: e.date };
   }
   return best;

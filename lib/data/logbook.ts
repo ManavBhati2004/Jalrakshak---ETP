@@ -12,15 +12,18 @@
    `toMeterReading`, `closingBalance`), so a corrected day can never disagree with a filed one.
    ============================================================ */
 
-import type { Approval, CorrectionChange, EntryCorrection, EtpEntry, HwLedger, Industry, MeterReading } from "@/lib/types";
+import type { Alert, Approval, CorrectionChange, EntryCorrection, EtpEntry, HwLedger, Industry, MeterReading } from "@/lib/types";
+import type { IndustrySlice } from "@/lib/data/firestore-storage";
 import { ENERGY_METERS, WATER_METERS } from "@/lib/constants";
 import {
   baselineAwareInitial,
+  carriedMeterSource,
   closingBalance,
   deriveWaterFigures,
   dispatchNeedsManifest,
   isFiledEntry,
   isOptionalWaterMeter,
+  isRealReading,
   meterKeyOf,
   parseDailyValue,
   round2,
@@ -28,7 +31,7 @@ import {
   type MeterBaseline,
   type NumericError,
 } from "@/lib/data/etp-calc";
-import { MAX_BALANCE, relinkLedgers, type LedgerName } from "@/lib/data/ledger-amend";
+import { MAX_BALANCE, relinkLedgers, withCarriedNote, type LedgerName } from "@/lib/data/ledger-amend";
 import { entryRevision } from "@/lib/data/approval-decisions";
 
 export type MeterKind = "water" | "energy" | "custom";
@@ -198,13 +201,14 @@ export function computeCorrections(all: readonly EtpEntry[], industryId: string,
     let prevOld: number | undefined; // the previous day's Final before the corrections
     let prevNew: number | undefined; // ...and after them
     let prevDate: string | undefined;
-    // The chain the entry form carries along: for water and energy, every earlier entry in any
-    // status (so a corrected Final also reaches a following draft or rejected day, whose Initial
-    // would otherwise be left locked on the old figure); for custom columns, filed days only.
-    const chain = kind === "custom" ? filed : unitAll;
-    for (const e0 of chain) {
+    // The chain the entry form carries along: every earlier entry in any status, so a corrected
+    // Final also reaches a following draft or rejected day, whose Initial would otherwise be left
+    // locked on the old figure.
+    for (const e0 of unitAll) {
       const isFiledDay = filedIds.has(e0.id);
       const orig = readingOf(e0, kind, code);
+      // A blank saved by an old draft is no reading: the carry passes over it, so the walk does too.
+      if (orig && !isRealReading(e0, orig)) continue;
       const fInit = meterField(kind, code, "initial");
       const fFinal = meterField(kind, code, "final");
       const eInit = editOf(e0.date, fInit);
@@ -328,6 +332,187 @@ export function computeCorrections(all: readonly EtpEntry[], industryId: string,
   });
   const carriedOnly = new Set([...changes.keys()].filter((id) => !direct.has(id)));
   return { entries: out, changes, carriedOnly, errors, editableInitials };
+}
+
+export type MeterRelinkResult =
+  | { ok: true; entries: EtpEntry[]; moved: Map<string, CorrectionChange[]> }
+  | { ok: false; error: string };
+
+/**
+ * Keep the readings continuous after a day was saved: a day's Final is the same meter reading as the
+ * next day's Initial, so when `savedDate` changes that value the next day must follow.
+ *
+ * Only each meter's NEXT reading can move - a later Final never changes, so nothing past it does.
+ * That day follows only when its Initial is what the carry produced before this save; an Initial
+ * that already differed is a gap on record and is left alone, and so is a first reading with nothing
+ * left to carry from. `before` and `after` are the unit's entries around the save, in any status,
+ * exactly as the form's carry sees them; Monitoring-Body baselines are honoured.
+ *
+ * A later FILED day whose Final would fall below its new Initial refuses the save, naming that day.
+ * A draft or rejected day just follows: its own form flags it, and the operator fixes it there.
+ */
+export function relinkMeters(
+  before: readonly EtpEntry[],
+  after: readonly EtpEntry[],
+  industryId: string,
+  savedDate: string,
+  ctx: LogbookContext,
+): MeterRelinkResult {
+  const later = after.filter((e) => e.industryId === industryId && e.date > savedDate).sort(byDate);
+  const next = new Map<string, EtpEntry>();
+  const moved = new Map<string, CorrectionChange[]>();
+  const waterMoved = new Set<string>();
+  for (const { kind, code } of logbookMeters(ctx.industry)) {
+    const day = later.find((e) => isRealReading(e, readingOf(e, kind, code)));
+    if (!day) continue;
+    const r = readingOf(day, kind, code)!;
+    const key = meterKeyOf(kind, code);
+    const was = baselineAwareInitial(ctx.baselines, key, day.date, carriedMeterSource(before, industryId, day.date, kind, code));
+    const now = baselineAwareInitial(ctx.baselines, key, day.date, carriedMeterSource(after, industryId, day.date, kind, code));
+    if (!was || !now || round2(r.initial) !== round2(was.value) || round2(now.value) === round2(was.value)) continue;
+    const reading = toMeterReading(now.value, r.final);
+    if (reading.final < reading.initial && isFiledEntry(day)) {
+      const meter = describeCorrectionField(meterField(kind, code, "final"), ctx.industry.customColumns);
+      return { ok: false, error: `This moves the Initial on ${day.date} to ${reading.initial}, above that day's ${meter} (${reading.final}). Correct ${day.date} first, or reduce this change.` };
+    }
+    next.set(day.id, withReading(next.get(day.id) ?? day, kind, code, reading));
+    moved.set(day.id, [...(moved.get(day.id) ?? []), { field: meterField(kind, code, "initial"), from: r.initial, to: reading.initial }]);
+    if (kind === "water") waterMoved.add(day.id);
+  }
+  const entries = after.map((e) => {
+    const n = next.get(e.id);
+    if (!n) return e;
+    return n.water && waterMoved.has(e.id) ? { ...n, ...deriveWaterFigures(n.water) } : n;
+  });
+  return { ok: true, entries, moved };
+}
+
+/* ---------------- Deleting a period ---------------- */
+
+const PERIOD_RE = /^\d{4}(-\d{2}(-\d{2})?)?$/;
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+/**
+ * Whether `date` falls in `period`: a whole year (YYYY), month (YYYY-MM) or day (YYYY-MM-DD). Exact
+ * by construction - a partial or empty period matches nothing, so a half-typed "2026-1" can never
+ * reach October to December, and a cleared field can never reach every record.
+ */
+export function inLogbookPeriod(date: string, period: string): boolean {
+  return PERIOD_RE.test(period) && (date === period || date.startsWith(`${period}-`));
+}
+
+/** "2026", "August 2026" or "12 August 2026". */
+export function describeLogbookPeriod(period: string): string {
+  const [y, m, d] = period.split("-");
+  const month = m ? MONTH_NAMES[Number(m) - 1] : undefined;
+  return [d ? String(Number(d)) : undefined, month, y].filter(Boolean).join(" ");
+}
+
+/** "3 approved, 1 pending, 2 drafts": the statuses present, in a fixed order. */
+export function describeLogbookCounts(c: LogbookPeriodSummary["counts"]): string {
+  return [
+    c.approved ? `${c.approved} approved` : "",
+    c.pending ? `${c.pending} pending` : "",
+    c.draft ? `${c.draft} draft${c.draft === 1 ? "" : "s"}` : "",
+    c.rejected ? `${c.rejected} rejected` : "",
+  ].filter(Boolean).join(", ");
+}
+
+/** What a delete must find unchanged. An approval moves `status`, which `entryRevision` leaves out. */
+const deletionRevision = (e: EtpEntry) => `${e.status}|${entryRevision(e)}`;
+
+export interface LogbookPeriodSummary {
+  rows: EtpEntry[];
+  counts: { approved: number; pending: number; draft: number; rejected: number };
+  /** Later days whose Sludge & Salt balances would be recalculated. */
+  recalculated: number;
+  /** The records as shown now: the delete is refused if they are not still exactly these. */
+  expected: Record<string, string>;
+}
+
+/** What deleting `period` from the unit would remove, for the confirmation and for the delete itself. */
+export function logbookPeriodSummary(entries: readonly EtpEntry[], industryId: string, period: string): LogbookPeriodSummary {
+  const rows = entries.filter((e) => e.industryId === industryId && inLogbookPeriod(e.date, period));
+  const ids = new Set(rows.map((e) => e.id));
+  const of = (test: (e: EtpEntry) => boolean) => rows.filter(test).length;
+  return {
+    rows,
+    counts: {
+      approved: of((e) => e.entryStatus !== "DRAFT" && e.status === "approved"),
+      pending: of((e) => e.entryStatus !== "DRAFT" && e.status !== "approved" && e.status !== "rejected"),
+      draft: of((e) => e.entryStatus === "DRAFT"),
+      rejected: of((e) => e.entryStatus !== "DRAFT" && e.status === "rejected"),
+    },
+    recalculated: rows.length ? relinkLedgers(entries, entries.filter((e) => !ids.has(e.id)), industryId, new Set()).moved.size : 0,
+    expected: Object.fromEntries(rows.map((e) => [e.id, deletionRevision(e)])),
+  };
+}
+
+export type LogbookDeleteResult = { ok: true; slice: IndustrySlice; removed: number; recalculated: number } | { ok: false; error: string };
+
+/**
+ * Delete a period's records from a unit's slice - the server's copy, read inside the deleting
+ * transaction. Every record in the period goes, in any status, with the approvals and alerts tied to
+ * those days.
+ *
+ * Later Sludge & Salt balances recalculate. Later meter Initials stay: they are real meter positions,
+ * so moving one would add the whole gap to that day's total.
+ *
+ * Refused when the period's records are not exactly the ones the officer confirmed (`expected`), so a
+ * day filed or changed meanwhile is never deleted unseen. One notice goes to the unit in the same
+ * write: it is told, and it is the visible record that this happened.
+ */
+export function deleteLogbookPeriod(
+  slice: IndustrySlice,
+  industryId: string,
+  period: string,
+  audit: { expected: Readonly<Record<string, string>>; alertId: string; at: string; byUid: string; byEmail?: string },
+): LogbookDeleteResult {
+  const { rows, counts } = logbookPeriodSummary(slice.etpEntries, industryId, period);
+  if (!rows.length) return { ok: false, error: "There are no records in that period." };
+  const unchanged = Object.keys(audit.expected).length === rows.length && rows.every((e) => audit.expected[e.id] === deletionRevision(e));
+  if (!unchanged) {
+    return { ok: false, error: "This unit's records for that period changed while you were deleting them. Check the summary and confirm again." };
+  }
+
+  const ids = new Set(rows.map((e) => e.id));
+  const firstDate = rows.map((e) => e.date).sort()[0];
+  const linked = relinkLedgers(slice.etpEntries, slice.etpEntries.filter((e) => !ids.has(e.id)), industryId, new Set());
+  const etpEntries = linked.entries.map((e) => (linked.moved.has(e.id) ? withCarriedNote(e, firstDate, audit.at, audit.byUid, slice.approvals) : e));
+
+  const label = describeLogbookPeriod(period);
+  const breakdown = describeLogbookCounts(counts);
+  const notice: Alert = {
+    id: audit.alertId,
+    type: "disciplinary",
+    severity: "medium",
+    industryId,
+    industryName: slice.industry?.name ?? null,
+    cetpId: slice.industry?.cetpId ?? null,
+    title: `Logbook records deleted · ${label}`,
+    message: `The Monitoring Body deleted ${rows.length} day${rows.length === 1 ? "" : "s"} of logbook records for ${label} (${breakdown}).`,
+    createdAt: audit.at,
+    status: "active",
+    relatedReadingId: null,
+    byUid: audit.byUid,
+    ...(audit.byEmail ? { byEmail: audit.byEmail } : {}),
+  };
+  const alerts = [notice, ...slice.alerts.filter((a) => !a.relatedReadingId || !ids.has(a.relatedReadingId))];
+  const lastFiled = etpEntries.filter((e) => e.industryId === industryId && isFiledEntry(e)).map((e) => e.submittedAt).sort().at(-1);
+  return {
+    ok: true,
+    slice: {
+      ...slice,
+      etpEntries,
+      approvals: slice.approvals.filter((a) => !ids.has(a.readingId)),
+      alerts,
+      industry: slice.industry
+        ? { ...slice.industry, lastReadingAt: lastFiled ?? null, alertsCount: alerts.filter((a) => a.status === "active").length }
+        : slice.industry,
+    },
+    removed: rows.length,
+    recalculated: linked.moved.size,
+  };
 }
 
 export type ApplyResult = { ok: true; etpEntries: EtpEntry[]; approvals: Approval[]; corrected: number } | { ok: false; error: string };

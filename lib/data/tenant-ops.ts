@@ -6,12 +6,12 @@
 
 import { doc, getDoc, serverTimestamp, writeBatch } from "firebase/firestore";
 import { auth, db } from "@/lib/firebase";
-import { patchTenantSlice } from "@/lib/data/tenant-tx";
+import { patchTenantSlice, TenantTxAbort } from "@/lib/data/tenant-tx";
 import { quiesceLocalWrites, retiredUnitIds } from "@/lib/data/firestore-storage";
-import { deleteDocument } from "@/lib/data/documents";
+import { deleteDocument, deleteDocumentReviews } from "@/lib/data/documents";
 import { approveCandidatesInSlice, type ApprovalCandidate, type CandidateOutcome } from "@/lib/data/approval-decisions";
 import { amendLedgers, type LedgerExpectation, type LedgerInputs } from "@/lib/data/ledger-amend";
-import { applyCorrections, type LogbookContext, type LogbookEdits } from "@/lib/data/logbook";
+import { applyCorrections, deleteLogbookPeriod, type LogbookContext, type LogbookEdits } from "@/lib/data/logbook";
 import { useDataStore } from "@/lib/store/data";
 import { ETP_DOCUMENT_TYPES } from "@/lib/types";
 
@@ -133,6 +133,9 @@ export async function deleteUnit(industryId: string, name: string): Promise<{ ok
       return { ok: false, error: "Could not remove the unit's uploaded documents, so the unit was not deleted. Try again." };
     }
   }
+  if (!(await deleteDocumentReviews(industryId))) {
+    return { ok: false, error: "Could not remove the unit's document reviews, so the unit was not deleted. Try again." };
+  }
   const batch = writeBatch(db);
   batch.set(doc(db, "retiredUnits", industryId), {
     industryId,
@@ -156,6 +159,55 @@ export async function deleteUnit(industryId: string, name: string): Promise<{ ok
   retiredUnitIds.add(industryId);
   useDataStore.getState().removeIndustry(industryId);
   return { ok: true };
+}
+
+/**
+ * Delete a period's logbook records from one unit (Monitoring Body), re-checked against the server's
+ * current copy: `expected` is the records as the confirmation showed them, so a day filed or changed
+ * meanwhile refuses the delete rather than going unseen. See deleteLogbookPeriod.
+ */
+export async function deleteLogbookRecords(
+  industryId: string,
+  period: string,
+  expected: Readonly<Record<string, string>>,
+): Promise<{ ok: true; removed: number; recalculated: number } | { ok: false; error: string }> {
+  const user = auth.currentUser;
+  if (!user) return { ok: false, error: "Your session has expired. Sign in again." };
+  // Fixed outside the transaction: Firestore may re-run `mutate`, and the notice must not change.
+  const at = new Date().toISOString();
+  const alertId = `AL-${Date.now().toString(36).toUpperCase()}-DEL`;
+  let failure: string | null = null;
+  const res = await patchTenantSlice(industryId, (slice) => {
+    failure = null; // reset per attempt: Firestore may re-run this on contention
+    const r = deleteLogbookPeriod(slice, industryId, period, { expected, alertId, at, byUid: user.uid, byEmail: user.email ?? undefined });
+    if (!r.ok) {
+      failure = r.error;
+      return { next: null, result: { removed: 0, recalculated: 0 } };
+    }
+    return { next: r.slice, result: { removed: r.removed, recalculated: r.recalculated } };
+  });
+  if (!res.ok) return { ok: false, error: res.error };
+  if (failure) return { ok: false, error: failure };
+  return { ok: true, ...res.result };
+}
+
+/** The unit details its own operator may change; everything else on the unit stays regulator-issued. */
+export interface UnitProfile {
+  ownerName: string;
+  contactPerson: string;
+  mobile: string;
+  address: string;
+  signatoryName: string;
+  signatoryDesignation: string;
+}
+
+/** Save a unit's contact details onto the server's current copy, touching nothing else. */
+export async function saveUnitProfile(industryId: string, details: UnitProfile): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await patchTenantSlice(industryId, (slice) => {
+    if (!slice.industry) throw new TenantTxAbort("That unit no longer exists.");
+    return { next: { ...slice, industry: { ...slice.industry, ...details } }, result: null };
+  });
+  return res.ok ? { ok: true } : res;
 }
 
 /** Close the help-request alert a meter issue raised, once that issue is resolved. */

@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { eligibleApprovalCandidates, type ApprovalCandidate, type CandidateOutcome } from "@/lib/data/approval-decisions";
 import { approveAll, type BulkApproveReport } from "@/lib/data/tenant-ops";
+import { describeCorrectionField } from "@/lib/data/logbook";
 import { syncContext } from "@/lib/data/firestore-storage";
 import { useDataStore } from "@/lib/store/data";
 import { useAuthStore } from "@/lib/store/auth";
@@ -314,11 +315,13 @@ export default function ApprovalsPage() {
  * inside the saving transaction), so no device clock decides what came "after".
  */
 function AmendedAfter({ approvalId, entry }: { approvalId: string; entry?: EtpEntry }) {
+  const customColumns = useDataStore((s) => s.industries.find((i) => i.id === entry?.industryId)?.customColumns);
   const after = (entry?.ledgerEdits ?? []).filter(
     (x) => x.approvalId === approvalId && (x.approvalStage === "approved" || x.approvalStage === "rejected"),
   );
   const edits = after.filter((x) => x.kind === "edit");
   const carried = after.filter((x) => x.kind === "carried");
+  const movedMeters = carried.flatMap((x) => x.meterChanges ?? []);
   // Monitoring-Body Logbook corrections made after the decision (stamped the same way).
   const corrected = (entry?.corrections ?? []).filter(
     (c) => c.approvalId === approvalId && (c.approvalStage === "approved" || c.approvalStage === "rejected"),
@@ -337,7 +340,11 @@ function AmendedAfter({ approvalId, entry }: { approvalId: string; entry?: EtpEn
       {carried.length ? (
         <p className="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2.5 py-1.5 text-xs font-medium text-amber-700">
           <PencilLine className="h-3.5 w-3.5 shrink-0" />
-          Sludge &amp; Salt balances recalculated after this decision (earlier day {formatDate(carried[carried.length - 1].sourceDate ?? null)} amended)
+          <span>
+            Figures recalculated after this decision (earlier day {formatDate(carried[carried.length - 1].sourceDate ?? null)} changed)
+            {movedMeters.slice(0, 3).map((c) => ` · ${describeCorrectionField(c.field, customColumns)}: ${formatNumber(Number(c.from))} → ${formatNumber(Number(c.to))}`)}
+            {movedMeters.length > 3 ? ` · and ${movedMeters.length - 3} more` : ""}
+          </span>
         </p>
       ) : null}
       {correctedDirect.length ? (

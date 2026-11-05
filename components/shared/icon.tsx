@@ -30,6 +30,7 @@ import {
   Megaphone,
   Send,
   BookOpenCheck,
+  FileText,
   Circle,
   type LucideIcon,
 } from "lucide-react";
@@ -64,6 +65,7 @@ const REGISTRY: Record<string, LucideIcon> = {
   Megaphone,
   Send,
   BookOpenCheck,
+  FileText,
 };
 
 export function Icon({
