@@ -145,6 +145,8 @@ export async function deleteUnit(industryId: string, name: string): Promise<{ ok
     deletedByEmail: user.email,
   });
   batch.delete(doc(db, "industries", industryId));
+  // Its registration decision goes with it (the rules allow that only in the same write).
+  batch.delete(doc(db, "registrationReviews", industryId));
   try {
     await batch.commit();
   } catch (e) {

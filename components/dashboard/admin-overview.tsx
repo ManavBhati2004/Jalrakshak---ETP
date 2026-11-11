@@ -3,8 +3,10 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { useShallow } from "zustand/react/shallow";
-import { ArrowRight, Droplets, FileSpreadsheet, Send } from "lucide-react";
+import { ArrowRight, Droplets, FileSpreadsheet, Send, UserPen } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { Button } from "@/components/ui/button";
+import { useAuthStore } from "@/lib/store/auth";
 import { MetricCard } from "@/components/dashboard/metric-card";
 import { PipelineFlow } from "@/components/dashboard/pipeline-flow";
 import { ReportsPanel } from "@/components/dashboard/reports-panel";
@@ -17,6 +19,7 @@ import { formatNumber, formatDate, timeAgo, displayUnit } from "@/lib/utils";
 import type { FlowNode } from "@/lib/types";
 
 export function AdminOverview() {
+  const officerName = useAuthStore((s) => s.name);
   const metrics = useDataStore(useShallow(selectMetrics));
   const alerts = useDataStore((s) => s.alerts);
   const approvals = useDataStore((s) => s.approvals);
@@ -63,9 +66,16 @@ export function AdminOverview() {
   return (
     <div className="space-y-6">
       <PageHeader
-        eyebrow="Monitoring Body"
+        eyebrow={officerName ? `Monitoring Body · Welcome, ${officerName}` : "Monitoring Body"}
         title="Command Center Overview"
         description="A unified, real-time view of individual ETP treatment, water balance, industrial compliance, the alert engine and one-click reports across every ETP unit."
+        actions={
+          <Button asChild variant="outline" className="h-10 gap-2 rounded-xl">
+            <Link href="/dashboard/profile?edit=1">
+              <UserPen className="h-4 w-4" /> Edit Profile
+            </Link>
+          </Button>
+        }
       />
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3 xl:grid-cols-6">

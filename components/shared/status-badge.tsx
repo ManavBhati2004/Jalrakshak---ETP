@@ -24,6 +24,7 @@ const MAP: Record<string, Tone> = {
   maintenance: "warning",
   verification: "info",
   submitted: "info",
+  draft: "muted",
   acknowledged: "info",
   suspended: "danger",
   "non-reporting": "danger",

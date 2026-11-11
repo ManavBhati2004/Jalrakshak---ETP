@@ -20,11 +20,13 @@ import { useAuthStore, isAdmin } from "@/lib/store/auth";
 import { useDataStore } from "@/lib/store/data";
 import { ROLES } from "@/lib/constants";
 import { useHydrated } from "@/lib/hooks/use-hydrated";
+import { guardedNavigate } from "@/lib/navigation-guard";
 
 export function Topbar() {
   const router = useRouter();
   const role = useAuthStore((s) => s.role);
   const industryId = useAuthStore((s) => s.industryId);
+  const name = useAuthStore((s) => s.name);
   const logout = useAuthStore((s) => s.logout);
   const alerts = useDataStore((s) => s.alerts);
   const industries = useDataStore((s) => s.industries);
@@ -38,10 +40,14 @@ export function Topbar() {
     [alerts, admin, industryId],
   );
 
-  const signOut = () => {
-    logout();
-    router.push("/");
-  };
+  // A form with unsaved changes asks first.
+  const signOut = () =>
+    guardedNavigate(() => {
+      logout();
+      router.push("/");
+    });
+  // An officer is shown by name (from their profile), with the role beneath it.
+  const title = admin ? name || roleMeta.name : (company?.name ?? roleMeta.name);
 
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/70 px-4 backdrop-blur-xl sm:px-6">
@@ -83,9 +89,7 @@ export function Topbar() {
                 <Icon name={roleMeta.icon} className="h-4 w-4" />
               </span>
               <span className="hidden text-left sm:block">
-                <span className="block max-w-[160px] truncate text-xs font-semibold leading-tight text-foreground">
-                  {admin ? roleMeta.name : company?.name ?? roleMeta.name}
-                </span>
+                <span className="block max-w-[160px] truncate text-xs font-semibold leading-tight text-foreground">{title}</span>
                 <span className="block text-[10px] leading-tight text-muted-foreground">
                   {admin ? "Monitoring Body" : `${roleMeta.name} Panel`}
                 </span>
@@ -95,8 +99,8 @@ export function Topbar() {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-60">
             <DropdownMenuLabel>
-              <p className="text-sm font-semibold">{admin ? roleMeta.name : company?.name ?? roleMeta.name}</p>
-              <p className="text-xs font-normal text-muted-foreground">{admin ? roleMeta.scope : company?.area ?? roleMeta.scope}</p>
+              <p className="truncate text-sm font-semibold">{title}</p>
+              <p className="text-xs font-normal text-muted-foreground">{admin ? (name ? `${roleMeta.name} · ${roleMeta.scope}` : roleMeta.scope) : (company?.area ?? roleMeta.scope)}</p>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
@@ -146,7 +150,7 @@ function AdminSearch() {
   const select = (id: string) => {
     setQuery("");
     setOpen(false);
-    router.push(`/dashboard/industries?focus=${id}`);
+    guardedNavigate(() => router.push(`/dashboard/industries?focus=${id}`));
   };
 
   return (

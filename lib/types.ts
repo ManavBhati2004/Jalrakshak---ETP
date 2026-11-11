@@ -172,6 +172,46 @@ export interface EtpDocumentReview {
   byUid: string;
 }
 
+/** A unit a quantity is entered in; stored quantities are also kept in canonical kg. */
+export type QuantityUnit = "KG" | "MT";
+
+/**
+ * A registration's lifecycle once submitted. A draft lives apart, in `registrationDrafts`; the
+ * Monitoring Body's decision lives in `registrationReviews/{industryId}`, where a unit can read it
+ * but never write it.
+ */
+export type RegistrationStatus = "SUBMITTED" | "APPROVED" | "REJECTED";
+export const REGISTRATION_STATUS_LABELS: Record<RegistrationStatus | "DRAFT", string> = {
+  DRAFT: "Draft",
+  SUBMITTED: "Submitted",
+  APPROVED: "Approved",
+  REJECTED: "Rejected",
+};
+
+/** The latest decision on a unit's registration. */
+export interface RegistrationReview {
+  status: RegistrationStatus;
+  remark: string;
+  at: string; // ISO, the server's time
+  byUid: string;
+  byEmail: string;
+}
+
+/** An unfinished registration, shared by the Monitoring Body's officers. Never holds a password. */
+export interface RegistrationDraft {
+  id: string;
+  /** The form's values that were filled in, by form key. */
+  data: Record<string, string>;
+  title: string;
+  /** Steps by one on every save; a save from an older copy is refused. */
+  rev: number;
+  createdAt: string; // ISO
+  createdByUid: string;
+  updatedAt: string; // ISO
+  updatedByUid: string;
+  updatedByEmail: string;
+}
+
 export interface Industry {
   id: string;
   name: string;
@@ -208,9 +248,21 @@ export interface Industry {
   hwmAuthDate?: string;
   hwmValidFrom?: string;
   hwmValidTo?: string;
-  authorisedQuantityKg?: number; // canonical kg (MT converted ×1000 at input)
-  authorisedSourceQuantity?: number; // original entered value (audit)
-  authorisedSourceUnit?: "KG" | "MT"; // original entered unit (audit)
+  /**
+   * The authorised quantity PER YEAR, in canonical kg (MT converted ×1000 at input). Units
+   * registered before the per-day / per-year split had one authorised quantity; it is this figure.
+   * The sludge authorisation warning reads it.
+   */
+  authorisedQuantityKg?: number;
+  /** Per year: the value as entered (audit), in `authorisedSourceUnit`. */
+  authorisedSourceQuantity?: number;
+  authorisedSourceUnit?: QuantityUnit;
+  /** The authorised quantity PER DAY - optional, and never derived from the per-year figure. */
+  authorisedPerDayQuantity?: number;
+  authorisedPerDayUnit?: QuantityUnit;
+  authorisedPerDayKg?: number;
+  /** Remarks on the HWM authorisation. */
+  hwmRemarks?: string;
   tsdfName?: string;
   tsdfAddress?: string;
   signatoryName?: string;

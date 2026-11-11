@@ -16,6 +16,7 @@ import {
 import { toast } from "sonner";
 import { useDataStore } from "@/lib/store/data";
 import { entryMeterTotal } from "@/lib/data/etp-calc";
+import { industryCsvRow } from "@/lib/data/registration";
 import { toCSV, stampedName } from "@/lib/utils";
 
 function download(filename: string, content: string) {
@@ -42,8 +43,9 @@ export function ReportsPanel() {
     setToday(`${n.getFullYear()}-${p(n.getMonth() + 1)}-${p(n.getDate())}`);
   }, []);
 
-  // Strip nested objects so the CSV never emits "[object Object]".
-  const industryRow = ({ monthlyProduction, ...rest }: (typeof industries)[number]) => rest;
+  // Fixed columns, so a unit lacking a field never drops that column for every unit (and nested
+  // objects never print as "[object Object]").
+  const industryRow = industryCsvRow;
   const etpRow = (e: (typeof etpEntries)[number]) => ({
     Date: e.date,
     Unit: e.industryName,

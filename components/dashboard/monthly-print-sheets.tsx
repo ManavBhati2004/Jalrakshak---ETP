@@ -2,7 +2,7 @@
 
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
-import { round2, kgToMt } from "@/lib/data/etp-calc";
+import { round2, kgToMt, authorisedQuantities, formatAuthorisedQuantities } from "@/lib/data/etp-calc";
 import { daysInMonth, ledgerRollup } from "@/lib/data/monthly";
 import { formatNumber, formatDate } from "@/lib/utils";
 
@@ -160,7 +160,7 @@ function LedgerGrid({ industry, month, dates, byDate, sludgeDisposalKg }: { indu
         </tbody>
       </table>
       <p className="mps-note">
-        Authorised quantity (ETP sludge): {industry.authorisedQuantityKg ? `${mt(industry.authorisedQuantityKg)} MT` : "—"}
+        Authorised quantity (ETP sludge): {authorisedQuantities(industry).perDay || authorisedQuantities(industry).perYear ? formatAuthorisedQuantities(industry, "MT") : "—"}
         <br />
         Sum of Disposal During Month: {mt(sludgeDisposalKg)} MT
         <br />

@@ -60,6 +60,14 @@ Headless (renders `null`), the **only** driver of data-store hydration. On `onAu
 - `users/{uid}`: read/update your own only; **create forces `role == 'etp'`** and **update keeps role immutable** → clients cannot self-assign `monitoring-admin` (regulators are provisioned out-of-band via console/Admin SDK).
 - `industries/{id}`: **read** = `isAdmin() || ownsIndustry(id)`; **create** = admin, or a signed-in user stamping `ownerUid == own uid` (self-registration); **update** = admin, or the owner (matched by profile `industryId` or the `ownerUid` stamp); **delete** = admin only. Everything else denied.
 - Client-side scoping (`firestoreStorage` write filter, `StoreHydrator` role-scoped load, `canAccessPath`/nav `roles`) **mirrors** the rules for UX but is **not** the boundary — the rules are.
+- `registrationDrafts/{id}` (v49): unfinished unit registrations, **Monitoring Body only**, shared by all officers. The form keys are whitelisted in `draftDataOk` (no `password`, ever; a vitest keeps the list in step with `REGISTRATION_FIELDS`), and `rev` must step by one per save, so a stale copy is refused.
+- `registrationReviews/{industryId}` (v49): the latest registration decision, SUBMITTED → APPROVED / REJECTED (remark required) and REJECTED → SUBMITTED. Monitoring Body writes, the owning unit may read; deleted only in the same batch as its unit. A unit with no record is Submitted while `status == "pending"`, else Approved.
+
+### Registration (v49)
+- The Monitoring Body's form (`components/dashboard/registration-form.tsx`) runs in three modes: new, `?draft=<id>` and edit (`/dashboard/industries/[id]/edit`, only changed fields saved, refused if one changed elsewhere since opening). All checks live in the pure `lib/data/registration.ts` (`validateRegistration`); Firestore calls in `lib/data/registration-ops.ts`.
+- **Authorised quantity:** the long-standing `authorisedQuantityKg` / `authorisedSourceQuantity` / `authorisedSourceUnit` trio IS the **per-year** figure (required); `authorisedPerDay*` is the optional per-day one; `hwmRemarks` the remarks. Never derive one from the other. The sludge warning still reads `authorisedQuantityKg`. Display via `authorisedQuantities` / `formatAuthorisedQuantities` (`lib/data/etp-calc.ts`).
+- Leaving a dirty form asks first (`lib/hooks/use-unsaved-changes-guard.ts`; code-started navigation goes through `guardedNavigate`), and a per-tab recovery copy (`lib/data/registration-recovery.ts`, never the password) covers browser Back.
+- The dashboard's `AnimatePresence` page transition mounts each new page twice (~0.3 s apart): keep deep-link state such as `?focus=` in the URL rather than reading it once and clearing it.
 
 ## Directory & file map
 
@@ -77,8 +85,10 @@ app/                              Next.js App Router
     page.tsx                      "/dashboard" role split: admin→<AdminOverview/>, etp→<EtpOverview/>
     etp-entry/page.tsx            ETP-only: daily water-balance form (validation rules below)
     etp/page.tsx                  admin: ETP units master/detail
-    industries/page.tsx           admin: registry table + dialog
-    industries/register/page.tsx  admin: lean onboarding form
+    industries/page.tsx           admin: registry table + dialog (registration status, approve/reject, drafts)
+    industries/register/page.tsx  admin: registration form (new, or ?draft=<id>)
+    industries/[id]/edit/page.tsx admin: edit a registered unit with the same form
+    profile/page.tsx              both: own profile (officer: Edit Profile → Save Changes / Cancel)
     approvals/page.tsx            admin: approve/reject workflow
     alerts/page.tsx               admin: ack/resolve alerts
     compliance/page.tsx           admin: scorecards

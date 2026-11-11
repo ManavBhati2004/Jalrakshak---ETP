@@ -148,6 +148,112 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ---- Registration drafts (Monitoring Body) ---------------------------------
+    // An unfinished unit registration, shared by the Monitoring Body's officers until it is
+    // submitted. A unit can never read one. The form's fields are whitelisted - so the unit's login
+    // password can never be stored here - and each is size-checked (the list mirrors
+    // REGISTRATION_FIELDS in lib/data/registration.ts; a unit test keeps the two in step). `rev`
+    // steps by one on every save, so a save from an officer's older copy is refused instead of
+    // silently overwriting another officer's newer one.
+    function optStr(m, k, max) {
+      return !(k in m) || (m[k] is string && m[k].size() <= max);
+    }
+    function draftDataOk(m) {
+      return m is map
+        && m.size() > 0
+        && m.keys().hasOnly(['name', 'ownerName', 'address', 'area', 'tehsil', 'district', 'misId', 'mobile', 'email',
+                             'consentOrderNo', 'consentOrderDate', 'consentValidFrom', 'consentValidTo',
+                             'hwmAuthNo', 'hwmAuthDate', 'hwmValidFrom', 'hwmValidTo',
+                             'authorisedPerDayQuantity', 'authorisedPerDayUnit', 'authorisedPerYearQuantity', 'authorisedPerYearUnit',
+                             'hwmRemarks', 'tsdfName', 'tsdfAddress', 'signatoryName', 'signatoryDesignation',
+                             'etpCapacity', 'maxEffluentGeneration', 'meeCapacity', 'roStage1', 'roStage2', 'roStage3', 'roStage4'])
+        && optStr(m, 'name', 200)
+        && optStr(m, 'ownerName', 100)
+        && optStr(m, 'address', 300)
+        && optStr(m, 'area', 100)
+        && optStr(m, 'tehsil', 100)
+        && optStr(m, 'district', 100)
+        && optStr(m, 'misId', 50)
+        && optStr(m, 'mobile', 10)
+        && optStr(m, 'email', 200)
+        && optStr(m, 'consentOrderNo', 100)
+        && optStr(m, 'consentOrderDate', 10)
+        && optStr(m, 'consentValidFrom', 10)
+        && optStr(m, 'consentValidTo', 10)
+        && optStr(m, 'hwmAuthNo', 100)
+        && optStr(m, 'hwmAuthDate', 10)
+        && optStr(m, 'hwmValidFrom', 10)
+        && optStr(m, 'hwmValidTo', 10)
+        && optStr(m, 'authorisedPerDayQuantity', 12)
+        && optStr(m, 'authorisedPerDayUnit', 2)
+        && optStr(m, 'authorisedPerYearQuantity', 12)
+        && optStr(m, 'authorisedPerYearUnit', 2)
+        && optStr(m, 'hwmRemarks', 1000)
+        && optStr(m, 'tsdfName', 200)
+        && optStr(m, 'tsdfAddress', 300)
+        && optStr(m, 'signatoryName', 100)
+        && optStr(m, 'signatoryDesignation', 100)
+        && optStr(m, 'etpCapacity', 12)
+        && optStr(m, 'maxEffluentGeneration', 12)
+        && optStr(m, 'meeCapacity', 12)
+        && optStr(m, 'roStage1', 12)
+        && optStr(m, 'roStage2', 12)
+        && optStr(m, 'roStage3', 12)
+        && optStr(m, 'roStage4', 12);
+    }
+    function draftOk(d) {
+      return d.keys().hasAll(['data', 'title', 'rev', 'createdAt', 'createdByUid', 'updatedAt', 'updatedByUid', 'updatedByEmail'])
+        && d.keys().hasOnly(['data', 'title', 'rev', 'createdAt', 'createdByUid', 'updatedAt', 'updatedByUid', 'updatedByEmail'])
+        && draftDataOk(d.data)
+        && d.title is string
+        && d.title.size() <= 200
+        && d.rev is int
+        && d.updatedAt == request.time
+        && d.updatedByUid == request.auth.uid
+        && d.updatedByEmail == request.auth.token.email;
+    }
+    match /registrationDrafts/{draftId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+                    && draftOk(request.resource.data)
+                    && request.resource.data.rev == 1
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.createdByUid == request.auth.uid;
+      allow update: if isAdmin()
+                    && draftOk(request.resource.data)
+                    && request.resource.data.rev == resource.data.rev + 1
+                    && request.resource.data.createdAt == resource.data.createdAt
+                    && request.resource.data.createdByUid == resource.data.createdByUid;
+      allow delete: if isAdmin();
+    }
+
+    // ---- Registration decisions (Monitoring Body) -------------------------------
+    // The latest decision on a registered unit: Submitted, Approved or Rejected. Kept out of the
+    // unit's own document, which its operator may rewrite, so a unit can read its decision but
+    // never forge one. A decision follows the lifecycle: a submitted registration is approved or
+    // rejected (a rejection needs a remark), and a rejected one may be submitted again. A unit with
+    // no record yet (registered before decisions existed) may get any first one. The record is
+    // removed only together with its unit.
+    match /registrationReviews/{industryId} {
+      allow read: if isAdmin() || ownsIndustry(industryId);
+      allow create, update: if isAdmin()
+                    && request.resource.data.keys().hasAll(['status', 'remark', 'at', 'byUid', 'byEmail'])
+                    && request.resource.data.keys().hasOnly(['status', 'remark', 'at', 'byUid', 'byEmail'])
+                    && request.resource.data.status in ['SUBMITTED', 'APPROVED', 'REJECTED']
+                    && request.resource.data.remark is string
+                    && request.resource.data.remark.size() <= 500
+                    && (request.resource.data.status != 'REJECTED' || request.resource.data.remark.trim().size() > 0)
+                    && request.resource.data.at == request.time
+                    && request.resource.data.byUid == request.auth.uid
+                    && request.resource.data.byEmail == request.auth.token.email
+                    && existsAfter(/databases/$(database)/documents/industries/$(industryId))
+                    && (resource == null
+                        || (resource.data.status == 'SUBMITTED' && request.resource.data.status in ['APPROVED', 'REJECTED'])
+                        || (resource.data.status == 'REJECTED' && request.resource.data.status == 'SUBMITTED'));
+      allow delete: if isAdmin()
+                    && !existsAfter(/databases/$(database)/documents/industries/$(industryId));
+    }
+
     // ---- Meter issues & baselines -------------------------------------------
     // An operator reports a faulty meter; the Monitoring Body resolves it by setting that meter's
     // new baseline. Kept OUT of the tenant's `json` blob on purpose: rules cannot inspect inside

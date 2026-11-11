@@ -77,9 +77,15 @@ export interface RegisterInput {
   hwmAuthDate?: string;
   hwmValidFrom?: string;
   hwmValidTo?: string;
+  /** Per year (the long-standing single authorised quantity). */
   authorisedQuantityKg?: number;
   authorisedSourceQuantity?: number;
   authorisedSourceUnit?: "KG" | "MT";
+  /** Per day: optional, never derived from the per-year figure. */
+  authorisedPerDayQuantity?: number;
+  authorisedPerDayUnit?: "KG" | "MT";
+  authorisedPerDayKg?: number;
+  hwmRemarks?: string;
   tsdfName?: string;
   tsdfAddress?: string;
   signatoryName?: string;
@@ -677,6 +683,10 @@ export const useDataStore = create<DataState>()(
           authorisedQuantityKg: input.authorisedQuantityKg,
           authorisedSourceQuantity: input.authorisedSourceQuantity,
           authorisedSourceUnit: input.authorisedSourceUnit,
+          authorisedPerDayQuantity: input.authorisedPerDayQuantity,
+          authorisedPerDayUnit: input.authorisedPerDayUnit,
+          authorisedPerDayKg: input.authorisedPerDayKg,
+          hwmRemarks: input.hwmRemarks,
           tsdfName: input.tsdfName,
           tsdfAddress: input.tsdfAddress,
           signatoryName: input.signatoryName,

@@ -76,15 +76,17 @@ export function StoreHydrator() {
       //    to the least-privileged role.
       let role: RoleId = "etp";
       let industryId: string | null = null;
+      let name = "";
       try {
         const snap = await getDoc(doc(db, "users", fbUser.uid));
         const d = snap.exists() ? snap.data() : null;
         role = (d?.role as RoleId) ?? "etp";
         industryId = (d?.industryId as string | null) ?? null;
+        name = typeof d?.name === "string" ? d.name : "";
       } catch {
         // best-effort — fall back to the operator default
       }
-      setSession({ uid: fbUser.uid, role, industryId });
+      setSession({ uid: fbUser.uid, role, industryId, name });
 
       // Suppress writes until the initial load finishes, so the store's seed
       // state can never clobber a real industry document.

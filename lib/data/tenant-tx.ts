@@ -13,7 +13,7 @@
    later local change cannot blindly re-write the stale pre-transaction copy over it.
    ============================================================ */
 
-import { doc, runTransaction } from "firebase/firestore";
+import { doc, runTransaction, type DocumentReference, type DocumentSnapshot, type Transaction } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { isNewerThanKnown, lastWriteAt, markSynced, quiesceLocalWrites, shardByIndustry, type IndustrySlice } from "@/lib/data/firestore-storage";
 import { useDataStore } from "@/lib/store/data";
@@ -27,11 +27,16 @@ export class TenantTxAbort extends Error {}
  * Patch one unit's slice against the server's current copy.
  *
  * `mutate` MUST be pure: Firestore may run it more than once if the document changes while the
- * transaction is in flight. Return `next: null` to finish without writing.
+ * transaction is in flight. Return `next: null` to finish without writing the unit.
+ *
+ * `opts.alsoRead` documents are read in the same transaction and handed to `mutate`; its `also`
+ * callback adds writes to that transaction (even when `next` is null), so a record kept apart from
+ * the unit - a registration decision, say - commits together with the unit or not at all.
  */
 export async function patchTenantSlice<R>(
   industryId: string,
-  mutate: (slice: IndustrySlice) => { next: IndustrySlice | null; result: R },
+  mutate: (slice: IndustrySlice, also: DocumentSnapshot[]) => { next: IndustrySlice | null; result: R; also?: (tx: Transaction) => void },
+  opts?: { alsoRead?: readonly DocumentReference[] },
 ): Promise<TenantTxResult<R>> {
   const ref = doc(db, "industries", industryId);
   // A local write still in flight would land AFTER this commit and overwrite it. Wait for every
@@ -50,7 +55,11 @@ export async function patchTenantSlice<R>(
       } catch {
         throw new TenantTxAbort("That unit's stored data could not be read.");
       }
-      const { next, result } = mutate(slice);
+      // Every read before any write, as a transaction requires.
+      const extra: DocumentSnapshot[] = [];
+      for (const r of opts?.alsoRead ?? []) extra.push(await tx.get(r));
+      const { next, result, also } = mutate(slice, extra);
+      also?.(tx);
       if (!next) return { result, json: null as string | null, updatedAt: 0, slice };
       const json = JSON.stringify(next);
       // Newer than anything this client or the server has seen, so every other client's

@@ -8,7 +8,7 @@
 
 import type { EtpEntry, Industry } from "@/lib/types";
 import { WATER_METERS, ENERGY_METERS, RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON } from "@/lib/constants";
-import { round2, kgToMt, toCanonicalKg, customColumnUnit, entryCustomReading, entryCustomTotal } from "@/lib/data/etp-calc";
+import { round2, kgToMt, formatAuthorisedQuantities, customColumnUnit, entryCustomReading, entryCustomTotal } from "@/lib/data/etp-calc";
 import { monthEntries, ledgerRollup, monthlyWaterTotal, monthlyWaterTotalOf, monthlyCustomTotal, TRADE_EFFLUENT_RECYCLED_CODES, daysInMonth, manifestRows } from "@/lib/data/monthly";
 
 type XLSXModule = typeof import("xlsx-js-style");
@@ -137,13 +137,11 @@ function ledgerSheet(XLSX: XLSXModule, industry: Industry, monthly: EtpEntry[], 
   secRow[7] = "ATFD Salt (MEE Section) / PAN Salt (MEE)";
   rows.push(secRow);
 
-  // Authorised quantity → MT via the canonical kg (never treats a raw KG source value as MT).
-  const authKg =
-    industry.authorisedQuantityKg ??
-    (industry.authorisedSourceQuantity != null ? toCanonicalKg(industry.authorisedSourceQuantity, industry.authorisedSourceUnit ?? "MT") : 0);
+  // Authorised quantities, per day and per year, in MT via the canonical kg (never treats a raw KG
+  // source value as MT). A unit from before the split has its one figure as the per-year quantity.
   const authRow: Cell[] = new Array(totalCols).fill("");
   authRow[0] = "Authorised Quantity";
-  authRow[1] = authKg ? `${kgToMt(authKg)} MT` : "Not configured";
+  authRow[1] = formatAuthorisedQuantities(industry, "MT");
   authRow[7] = "Not configured";
   rows.push(authRow);
 

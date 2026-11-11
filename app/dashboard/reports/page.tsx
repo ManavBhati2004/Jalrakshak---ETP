@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { useDataStore } from "@/lib/store/data";
 import { toCSV, stampedName } from "@/lib/utils";
+import { industryCsvRow } from "@/lib/data/registration";
 
 const TODAY = "2026-06-20";
 
@@ -29,11 +30,11 @@ export default function ReportsPage() {
   const REPORTS = [
     { key: "daily", title: "Daily Report", desc: "All readings recorded today", icon: CalendarDays, color: "#22d3ee", count: readings.filter((r) => r.date === TODAY).length, build: () => readings.filter((r) => r.date === TODAY) },
     { key: "monthly", title: "Monthly Report", desc: "Full reading logbook export", icon: CalendarRange, color: "#34d399", count: readings.length, build: () => readings },
-    { key: "industry", title: "Industry-Wise", desc: "Per-unit consent & compliance", icon: Factory, color: "#60a5fa", count: industries.length, build: () => industries.map(({ flow, ...rest }: any) => rest) },
+    { key: "industry", title: "Industry-Wise", desc: "Per-unit consent & compliance", icon: Factory, color: "#60a5fa", count: industries.length, build: () => industries.map(industryCsvRow) },
     { key: "compliance", title: "Compliance Report", desc: "Scores & submission rates", icon: ShieldCheck, color: "#10b981", count: compliance.length, build: () => compliance.map(({ trend, ...rest }) => rest) },
     { key: "pending", title: "Pending Entries", desc: "Awaiting verification", icon: Clock, color: "#fbbf24", count: approvals.filter((a) => a.stage === "submitted" || a.stage === "verification").length, build: () => approvals.filter((a) => a.stage === "submitted" || a.stage === "verification").map(({ timeline, alerts, ...rest }) => rest) },
     { key: "rejected", title: "Rejected Entries", desc: "Rejected readings log", icon: XCircle, color: "#f87171", count: approvals.filter((a) => a.stage === "rejected").length, build: () => approvals.filter((a) => a.stage === "rejected").map(({ timeline, alerts, ...rest }) => rest) },
-    { key: "nonreporting", title: "Non-Reporting", desc: "Units silent for 48h+", icon: WifiOff, color: "#fb923c", count: industries.filter((i) => i.status === "non-reporting").length, build: () => industries.filter((i) => i.status === "non-reporting") },
+    { key: "nonreporting", title: "Non-Reporting", desc: "Units silent for 48h+", icon: WifiOff, color: "#fb923c", count: industries.filter((i) => i.status === "non-reporting").length, build: () => industries.filter((i) => i.status === "non-reporting").map(industryCsvRow) },
   ];
 
   const handleExport = (r: (typeof REPORTS)[number]) => {

@@ -10,6 +10,8 @@ import {
   cumulativeDispatch,
   authorisedQuantityWarning,
   authorisationUsage,
+  authorisedQuantities,
+  formatAuthorisedQuantities,
   mtToKg,
   toCanonicalKg,
   parseDailyValue,
@@ -202,6 +204,36 @@ describe("savedDayInitial — the Initial a saved day shows", () => {
     expect(savedDayInitial(undefined, undefined, 150)).toBe(150);
     expect(savedDayInitial(undefined, undefined, undefined)).toBeNull();
     expect(savedDayInitial(draft, null, 150)).toBe(150);
+  });
+});
+
+describe("authorised quantities — per day and per year", () => {
+  const legacy = { authorisedQuantityKg: 15420, authorisedSourceQuantity: 15.42, authorisedSourceUnit: "MT" as const };
+
+  it("a unit from before the split has its one quantity as per year, and no per day", () => {
+    expect(authorisedQuantities(legacy)).toEqual({ perDay: null, perYear: { quantity: 15.42, unit: "MT", kg: 15420 } });
+    expect(authorisedQuantities({ authorisedQuantityKg: 15420 }).perYear).toEqual({ quantity: 15420, unit: "KG", kg: 15420 });
+    expect(authorisedQuantities({ authorisedSourceQuantity: 2, authorisedSourceUnit: "MT" }).perYear?.kg).toBe(2000);
+  });
+
+  it("each is kept in its own unit, and neither is derived from the other", () => {
+    const q = authorisedQuantities({ authorisedPerDayQuantity: 50, authorisedPerDayUnit: "KG", authorisedPerDayKg: 50 });
+    expect(q).toEqual({ perDay: { quantity: 50, unit: "KG", kg: 50 }, perYear: null });
+    expect(authorisedQuantities(null)).toEqual({ perDay: null, perYear: null });
+  });
+
+  it("formats as entered, or in MT for the prescribed sheets", () => {
+    const both = { ...legacy, authorisedPerDayQuantity: 50, authorisedPerDayUnit: "KG" as const, authorisedPerDayKg: 50 };
+    expect(formatAuthorisedQuantities(both)).toBe("50 kg per day · 15.42 MT per year");
+    expect(formatAuthorisedQuantities(both, "MT")).toBe("0.05 MT per day · 15.42 MT per year");
+    expect(formatAuthorisedQuantities(legacy, "MT")).toBe("15.42 MT per year");
+    expect(formatAuthorisedQuantities({})).toBe("Not configured");
+  });
+
+  it("the sludge warning is unchanged: it reads the per-year figure, the long-standing single quantity", () => {
+    for (const used of [0, 1000, 12335, 12336, 15420, 20000]) {
+      expect(authorisedQuantityWarning(used, legacy.authorisedQuantityKg)).toBe(authorisedQuantityWarning(used, authorisedQuantities(legacy).perYear?.kg));
+    }
   });
 });
 

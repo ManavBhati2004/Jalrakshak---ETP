@@ -4,7 +4,7 @@
    client Excel; behaviour follows the master prompt (FE/CR/JALRAKSHAK/001 R2).
    ============================================================ */
 
-import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type Industry, type MeterIssue, type MeterReading, type HwLedger } from "@/lib/types";
+import { DEFAULT_CUSTOM_COLUMN_UNIT, type EtpEntry, type Industry, type MeterIssue, type MeterReading, type HwLedger, type QuantityUnit } from "@/lib/types";
 import {
   WATER_METERS,
   RO_GRAND_TOTAL_EXCLUDES_PERMEATE_COMMON,
@@ -590,6 +590,47 @@ export function mtToKg(mt: number): number {
 /** Convert a source quantity in KG or MT to canonical kg (never double-converts). */
 export function toCanonicalKg(quantity: number, unit: "KG" | "MT"): number {
   return unit === "MT" ? mtToKg(quantity) : round2(quantity);
+}
+
+/** One authorised quantity: as entered, and in canonical kg. */
+export interface AuthorisedQuantity {
+  quantity: number;
+  unit: QuantityUnit;
+  kg: number;
+}
+
+function authorisedQuantityOf(kg: number | undefined, quantity: number | undefined, unit: QuantityUnit | undefined): AuthorisedQuantity | null {
+  const q = quantity != null && Number.isFinite(Number(quantity)) ? Number(quantity) : null;
+  const k = kg != null && Number.isFinite(Number(kg)) ? Number(kg) : q != null ? toCanonicalKg(q, unit ?? "MT") : null;
+  if (k == null || k <= 0) return null;
+  return q != null && q > 0 ? { quantity: q, unit: unit ?? "MT", kg: k } : { quantity: k, unit: "KG", kg: k };
+}
+
+/**
+ * A unit's authorised quantities. The per-year figure is the long-standing single authorised
+ * quantity (`authorisedQuantityKg` and its entered value), so units registered before the split
+ * show it as their per-year figure. Neither is ever derived from the other.
+ */
+export function authorisedQuantities(ind: Partial<Industry> | null | undefined): { perDay: AuthorisedQuantity | null; perYear: AuthorisedQuantity | null } {
+  if (!ind) return { perDay: null, perYear: null };
+  return {
+    perDay: authorisedQuantityOf(ind.authorisedPerDayKg, ind.authorisedPerDayQuantity, ind.authorisedPerDayUnit),
+    perYear: authorisedQuantityOf(ind.authorisedQuantityKg, ind.authorisedSourceQuantity, ind.authorisedSourceUnit),
+  };
+}
+
+const quantityFormat = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
+
+/**
+ * "50 kg per day · 15.42 MT per year", or "Not configured". `as: "entered"` shows each figure in
+ * the unit it was entered in; `as: "MT"` converts both to MT, as the prescribed sheets print them.
+ */
+export function formatAuthorisedQuantities(ind: Partial<Industry> | null | undefined, as: "entered" | "MT" = "entered"): string {
+  const { perDay, perYear } = authorisedQuantities(ind);
+  const show = (q: AuthorisedQuantity) =>
+    as === "MT" ? `${kgToMt(q.kg)} MT` : q.unit === "MT" ? `${quantityFormat.format(q.quantity)} MT` : `${quantityFormat.format(q.quantity)} kg`;
+  const parts = [perDay ? `${show(perDay)} per day` : "", perYear ? `${show(perYear)} per year` : ""].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "Not configured";
 }
 
 /* ---------------- Numeric standard (master §4) ---------------- */

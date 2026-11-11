@@ -178,6 +178,37 @@ export async function saveProfileName(uid: string, name: string): Promise<{ ok: 
   }
 }
 
+/** A Monitoring Body officer's own profile details (`users/{uid}`). */
+export interface OfficerProfile {
+  name: string;
+  designation: string;
+  mobile: string;
+  office: string;
+}
+
+/** The officer's own profile; `ok: false` when it cannot be read (so the page says so, not "blank"). */
+export async function loadOfficerProfile(uid: string): Promise<{ ok: true; profile: OfficerProfile } | { ok: false; error: string }> {
+  try {
+    const d = (await getDoc(doc(db, "users", uid))).data() ?? {};
+    const s = (v: unknown) => (typeof v === "string" ? v : "");
+    return { ok: true, profile: { name: s(d.name), designation: s(d.designation), mobile: s(d.mobile), office: s(d.office) } };
+  } catch {
+    return { ok: false, error: "Your profile could not be loaded. Check your connection and reload the page." };
+  }
+}
+
+/** Save the officer's own changed details. Only these fields are sent, so role and unit link stay as they are. */
+export async function saveOfficerProfile(uid: string, changes: Partial<OfficerProfile>): Promise<{ ok: true } | { ok: false; error: string }> {
+  const clean = Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, (v ?? "").trim()]));
+  if (!Object.keys(clean).length) return { ok: true };
+  try {
+    await setDoc(doc(db, "users", uid), clean, { merge: true });
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Could not save. Check your connection and try again." };
+  }
+}
+
 /**
  * Admin-only reset of a unit's login password - no current password needed. The browser cannot set
  * another account's password, so the new one goes to the app's own server endpoint, which checks the

@@ -1,25 +1,34 @@
 "use client";
 
-import { useEffect, useMemo, useState, Suspense } from "react";
+import { useMemo, useState, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plus, Eye, EyeOff, Phone, Mail, FileText, KeyRound, CheckCircle2, Circle } from "lucide-react";
+import { Plus, Eye, EyeOff, Phone, Mail, FileText, KeyRound, CheckCircle2, Circle, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DataTable } from "@/components/dashboard/data-table";
+import { RegistrationDraftsPanel } from "@/components/dashboard/registration-drafts-panel";
+import { RegistrationDetails } from "@/components/dashboard/registration-details";
+import { RegistrationReviewBlock } from "@/components/dashboard/registration-review-block";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useDataStore } from "@/lib/store/data";
 import { resetUnitPassword } from "@/lib/store/accounts";
+import { registrationStatusOf } from "@/lib/data/registration";
+import { useRegistrationReviews } from "@/lib/hooks/use-registration-records";
 import { PASSWORD_RULES, passwordMeetsRules } from "@/lib/password-rules";
-import type { Industry } from "@/lib/types";
+import { REGISTRATION_STATUS_LABELS, type Industry, type RegistrationReview, type RegistrationStatus } from "@/lib/types";
 import { formatNumber, formatDate, cn } from "@/lib/utils";
 import { STATUS_COLOR, complianceStatus } from "@/lib/constants";
 
+/** Registration status filters for the table. Drafts are listed in their own panel above it. */
 const FILTERS = [
   { key: "all", label: "All" },
+  { key: "SUBMITTED", label: "Submitted" },
+  { key: "APPROVED", label: "Approved" },
+  { key: "REJECTED", label: "Rejected" },
 ] as const;
 
 export default function IndustriesPage() {
@@ -34,21 +43,33 @@ function IndustriesView() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const industries = useDataStore((s) => s.industries);
+  const reviews = useRegistrationReviews();
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["key"]>("all");
-  const [selected, setSelected] = useState<Industry | null>(null);
+  // The id, not a copy: the dialog then always shows the unit as it is now (a decision, an edit).
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // A deep link (?focus=IND-###, from the search box or after an edit) opens that unit's dialog. The
+  // parameter stays in the address while the dialog is open: the dashboard's page transition mounts
+  // the page twice, and the second mount must still find it.
+  const focusId = searchParams.get("focus");
+  const openId = selectedId ?? focusId;
+  const selected = openId ? (industries.find((i) => i.id === openId) ?? null) : null;
+  const closeDialog = () => {
+    setSelectedId(null);
+    if (focusId) router.replace("/dashboard/industries", { scroll: false });
+  };
 
-  const filtered = useMemo(() => industries, [industries]);
+  // Statuses only once the decisions are loaded: a decided unit must not flash as undecided.
+  const statusOf = (i: Industry): RegistrationStatus | null => (reviews.loaded && !reviews.error ? registrationStatusOf(i, reviews.byUnit[i.id]) : null);
+  const regCounts = useMemo(() => {
+    const c: Record<RegistrationStatus, number> = { SUBMITTED: 0, APPROVED: 0, REJECTED: 0 };
+    if (reviews.loaded && !reviews.error) for (const i of industries) c[registrationStatusOf(i, reviews.byUnit[i.id])]++;
+    return c;
+  }, [industries, reviews]);
+  const filtered = useMemo(
+    () => (filter === "all" || !reviews.loaded || reviews.error ? industries : industries.filter((i) => registrationStatusOf(i, reviews.byUnit[i.id]) === filter)),
+    [industries, reviews, filter],
+  );
 
-  // Deep-link from the topbar search (?focus=IND-###) → open that unit's detail.
-  useEffect(() => {
-    const focus = searchParams.get("focus");
-    if (!focus) return;
-    const ind = industries.find((i) => i.id === focus);
-    if (ind) {
-      setSelected(ind);
-      router.replace("/dashboard/industries", { scroll: false });
-    }
-  }, [searchParams, industries, router]);
 
   const counts = useMemo(
     () => ({
@@ -117,6 +138,18 @@ function IndustriesView() {
       ),
     },
     {
+      id: "registration",
+      header: "Registration",
+      accessorFn: (i) => {
+        const s = statusOf(i);
+        return s ? REGISTRATION_STATUS_LABELS[s] : "";
+      },
+      cell: ({ row }) => {
+        const s = statusOf(row.original);
+        return s ? <StatusBadge status={s.toLowerCase()} label={REGISTRATION_STATUS_LABELS[s]} /> : <span className="text-xs text-muted-foreground">…</span>;
+      },
+    },
+    {
       accessorKey: "status",
       header: "Status",
       cell: ({ row }) => <StatusBadge status={row.original.status} />,
@@ -125,9 +158,19 @@ function IndustriesView() {
       id: "actions",
       header: "",
       cell: ({ row }) => (
-        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelected(row.original)}>
-          <Eye className="h-4 w-4" />
-        </Button>
+        <div className="flex items-center justify-end gap-1">
+          <Link
+            href={`/dashboard/industries/${encodeURIComponent(row.original.id)}/edit`}
+            aria-label={`Edit registration of ${row.original.name}`}
+            title="Edit registration"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Pencil className="h-4 w-4" />
+          </Link>
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setSelectedId(row.original.id)} aria-label={`View ${row.original.name}`}>
+            <Eye className="h-4 w-4" />
+          </Button>
+        </div>
       ),
     },
   ];
@@ -155,29 +198,45 @@ function IndustriesView() {
         <Chip label="Non-Reporting" value={counts.nonReporting} tone="text-orange-400" />
       </div>
 
+      <RegistrationDraftsPanel />
+
+      {reviews.error ? (
+        <p className="rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-800">
+          Registration statuses could not be loaded, so they are not shown. Check your connection and reload the page.
+        </p>
+      ) : null}
+
       <DataTable
         columns={columns}
         data={filtered}
         searchPlaceholder="Search company, area, consent…"
         toolbar={
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Filter by registration status">
             {FILTERS.map((f) => (
               <button
                 key={f.key}
                 onClick={() => setFilter(f.key)}
+                aria-pressed={filter === f.key}
                 className={cn(
                   "rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
                   filter === f.key ? "bg-primary/15 text-primary ring-1 ring-primary/30" : "text-muted-foreground hover:bg-muted",
                 )}
               >
                 {f.label}
+                {f.key !== "all" && reviews.loaded && !reviews.error ? ` (${regCounts[f.key]})` : ""}
               </button>
             ))}
           </div>
         }
       />
 
-      <IndustryDialog industry={selected} onClose={() => setSelected(null)} />
+      <IndustryDialog
+        industry={selected}
+        review={selected ? (reviews.byUnit[selected.id] ?? null) : null}
+        reviewsLoaded={reviews.loaded}
+        reviewsFailed={reviews.error}
+        onClose={closeDialog}
+      />
     </div>
   );
 }
@@ -191,15 +250,28 @@ function Chip({ label, value, tone }: { label: string; value: number; tone: stri
   );
 }
 
-function IndustryDialog({ industry, onClose }: { industry: Industry | null; onClose: () => void }) {
+function IndustryDialog({
+  industry,
+  review,
+  reviewsLoaded,
+  reviewsFailed,
+  onClose,
+}: {
+  industry: Industry | null;
+  review: RegistrationReview | null;
+  reviewsLoaded: boolean;
+  reviewsFailed: boolean;
+  onClose: () => void;
+}) {
   return (
     <Dialog open={!!industry} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
         {industry && (
           <>
             <DialogHeader>
               <DialogTitle className="font-display text-xl">{industry.name}</DialogTitle>
             </DialogHeader>
+            <RegistrationReviewBlock industry={industry} review={review} loaded={reviewsLoaded} failed={reviewsFailed} />
             <div className="flex items-center justify-between">
               <div className="space-y-1 text-sm">
                 <p className="text-muted-foreground">Owner</p>
@@ -245,13 +317,33 @@ function IndustryDialog({ industry, onClose }: { industry: Industry | null; onCl
               <span className="font-medium text-foreground">{formatDate(industry.lastReadingAt, true)}</span>
             </div>
 
+            <details className="group rounded-xl border border-border">
+              <summary className="flex cursor-pointer list-none items-center justify-between p-3 text-sm font-medium text-foreground">
+                <span className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-primary" /> Registration details
+                </span>
+                <span className="text-xs text-muted-foreground group-open:hidden">Show</span>
+                <span className="hidden text-xs text-muted-foreground group-open:inline">Hide</span>
+              </summary>
+              <div className="border-t border-border p-3">
+                <RegistrationDetails industry={industry} />
+              </div>
+            </details>
+
             <ResetPasswordSection email={industry.email} industryId={industry.id} />
 
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <StatusBadge status={industry.status} />
-              <Button asChild size="sm" className="rounded-lg">
-                <Link href="/dashboard/etp">View ETP data</Link>
-              </Button>
+              <div className="flex gap-2">
+                <Button asChild size="sm" variant="outline" className="gap-1.5 rounded-lg">
+                  <Link href={`/dashboard/industries/${encodeURIComponent(industry.id)}/edit`}>
+                    <Pencil className="h-3.5 w-3.5" /> Edit registration
+                  </Link>
+                </Button>
+                <Button asChild size="sm" className="rounded-lg">
+                  <Link href="/dashboard/etp">View ETP data</Link>
+                </Button>
+              </div>
             </div>
           </>
         )}
